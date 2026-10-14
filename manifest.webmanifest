@@ -1,0 +1,16 @@
+{
+  "name": "Impossible Rooms",
+  "short_name": "Impossible Rooms",
+  "description": "A first-person puzzle game of impossible architecture, portals and shifting gravity.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#04060b",
+  "theme_color": "#04060b",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" },
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

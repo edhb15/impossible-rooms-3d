@@ -58,6 +58,9 @@ function mulberry32(seed) {
   };
 }
 const GRAVITY_NAMES = { '0,1,0': 'FLOOR', '0,-1,0': 'CEILING', '1,0,0': 'WEST WALL', '-1,0,0': 'EAST WALL', '0,0,1': 'NORTH WALL', '0,0,-1': 'SOUTH WALL' };
+// True while touch controls are active; lets text name the right control.
+let TOUCH = false;
+const ctl = (desktop, touch) => (TOUCH ? touch : desktop);
 function gravityName(up) { return GRAVITY_NAMES[`${Math.round(up.x)},${Math.round(up.y)},${Math.round(up.z)}`] || 'UNKNOWN'; }
 
 /* ---------------------------------------------------------------------
@@ -68,12 +71,13 @@ const LEVEL_COUNT = 5;
 const DEFAULT_SETTINGS = {
   master: 0.8, music: 0.55, sfx: 0.85, muted: false,
   sensitivity: 1.0, invertY: false, fov: 75,
-  quality: 'high', hints: false, headBob: true,
+  quality: 'high', hints: false, headBob: true, touch: 'auto',
 };
 
 class SaveData {
   constructor() {
     this.data = this.fresh();
+    this.isNew = true;
     this.load();
   }
   fresh() {
@@ -88,6 +92,7 @@ class SaveData {
   load() {
     try {
       const raw = localStorage.getItem(SAVE_KEY);
+      this.isNew = !raw;
       if (!raw) return;
       const d = JSON.parse(raw);
       const f = this.fresh();
@@ -1787,7 +1792,7 @@ class Portal extends Entity {
     this.group.matrixAutoUpdate = false;
     this.group.matrix.copy(this.matrix);
     level.scene.add(this.group);
-    this.rt = new THREE.WebGLRenderTarget(4, 4, { type: THREE.HalfFloatType });
+    this.rt = new THREE.WebGLRenderTarget(4, 4, { type: this.game.rtType });
     level.own(this.rt);
     this.uniforms = {
       tView: { value: this.rt.texture },
@@ -2278,10 +2283,10 @@ class Level1 extends Level {
     this.spawn = { pos: V3(0, 0, 6.2), up: Y_UP, look: V3(0, 0, -1) };
     this.bounds = { min: V3(-20, -20, -25), max: V3(20, 30, 20) };
     this.hints = [
-      'Use W A S D to walk and the mouse to look. Hold SHIFT to sprint.',
-      'The metal barrier is low enough to clear — run at it and press SPACE.',
-      'Aim the crosshair at the glowing button on the pedestal and press E.',
-      'The button opened a hidden alcove in the west wall. Pick up the cube with E, carry it, and press E again to drop it on the glowing plate.',
+      ctl('Use W A S D to walk and the mouse to look. Hold SHIFT to sprint.', 'Drag on the left half of the screen to walk and on the right half to look. Push the stick all the way to sprint.'),
+      `The metal barrier is low enough to clear — run at it and ${ctl('press SPACE', 'tap JUMP')}.`,
+      `Aim the crosshair at the glowing button on the pedestal and ${ctl('press E', 'tap USE')}.`,
+      `The button opened a hidden alcove in the west wall. Pick up the cube with ${ctl('E', 'USE')}, carry it, and ${ctl('press E', 'tap USE')} again to drop it on the glowing plate.`,
     ];
 
     // ---- Main chamber shell ----
@@ -2363,9 +2368,9 @@ class Level1 extends Level {
     if (this.stage === 1 && p.z < 1.7) this.stage = 2;
     if (this.stage === 4 && !this.plate.pressed) this.stage = 3;
     const objectives = [
-      'Walk forward (W A S D) and look around with the mouse.',
-      'Jump over the barrier — press SPACE while moving.',
-      'Press the button on the pedestal — aim and press E.',
+      ctl('Walk forward (W A S D) and look around with the mouse.', 'Walk forward with your left thumb and look around with your right.'),
+      `Jump over the barrier — ${ctl('press SPACE', 'tap JUMP')} while moving.`,
+      `Press the button on the pedestal — aim and ${ctl('press E', 'tap USE')}.`,
       'Carry the cube from the storage alcove onto the pressure plate.',
       'The exit is open. Walk through the door.',
     ];
@@ -2641,11 +2646,11 @@ class Level3 extends Level {
     this.spawn = { pos: V3(0, 0, 6.5), up: Y_UP, look: V3(0, 0, -1) };
     this.bounds = { min: V3(-30, -30, -30), max: V3(30, 40, 30) };
     this.hints = [
-      'Amber panels redirect gravity toward the surface they are mounted on. Aim at one and press E — they work from a distance.',
+      `Amber panels redirect gravity toward the surface they are mounted on. Aim at one and ${ctl('press E', 'tap USE')} — they work from a distance.`,
       'The energy core floats high on the east wall. Make the east wall your floor, then walk to it.',
       'The ceiling panel is hidden above the great slab. Only the west wall, above the slab, has a view of it.',
       'The exit hangs upside-down beside the ceiling. Walk on the ceiling and insert the core into the socket next to it.',
-      'If the core falls somewhere unreachable it is recalled to its cradle. Press R to reset the room at any time.',
+      `If the core falls somewhere unreachable it is recalled to its cradle. ${ctl('Press R', 'Tap ↺')} to reset the room at any time.`,
     ];
     // ---- Chamber shell ----
     this.box(-S - T, -T, -S - T, S + T, 0, S + T, gm);
@@ -2751,7 +2756,7 @@ class Level4 extends Level {
       'Portals join distant walls. Walk straight into the blue portal on the west wall and see where you come out.',
       'The plates only respond to cubes. The sealed cell behind the glass can only be reached through the blue portal.',
       'A second cube waits on the balcony. The orange portal in the south wall leads up there.',
-      'Hold a cube (E) while walking through a portal — it travels with you. Put one cube on each plate.',
+      `Hold a cube (${ctl('E', 'USE')}) while walking through a portal — it travels with you. Put one cube on each plate.`,
       'A keycard lies on the table inside the containment cell. Carry it back through the portal and insert it into the reader beside the exit.',
     ];
     // ---- Lab shell ----
@@ -2864,11 +2869,11 @@ class Level5 extends Level {
     this.setAtmosphere({ bg: 0x07040e, density: 0.0105, env: 0.45, hemi: [0x9a8cd8, 0x120a1c, 0.6] });
     this.bounds = { min: V3(-60, -45, -130), max: V3(60, 70, 30) };
     this.hints = [
-      'Stand on the glowing eye at the edge of the first platform and look down the gap. When the fragments line up, press E.',
+      `Stand on the glowing eye at the edge of the first platform and look down the gap. When the fragments line up, ${ctl('press E', 'tap USE')}.`,
       'The switch rotates the conduit a quarter turn each time. Turn it until the solid walkway is at the bottom.',
-      'The monolith panel is too far to reach from the platform. Ride the moving platform closer, then aim at the panel and press E.',
+      `The monolith panel is too far to reach from the platform. Ride the moving platform closer, then aim at the panel and ${ctl('press E', 'tap USE')}.`,
       'Walk up the face of the monolith. The portal at the top leads out.',
-      'Falling into the void returns you to the last checkpoint. R also resets to the checkpoint.',
+      `Falling into the void returns you to the last checkpoint. ${ctl('R', '↺')} also resets to the checkpoint.`,
     ];
     this.finale = null;
     const sp = [
@@ -3284,13 +3289,13 @@ class UI {
   }
   setTimer(t) { this.$('timer').textContent = formatTime(t); }
   setPrompt(p) {
-    const key = p ? `${p.text}|${p.far ? 1 : 0}|${p.key || 'E'}` : null;
+    const key = p ? `${p.text}|${p.far ? 1 : 0}|${p.key || 'E'}|${TOUCH}` : null;
     if (key === this.lastPrompt) return;
     this.lastPrompt = key;
     if (!p) { this.promptEl.classList.add('hidden'); return; }
     this.promptEl.classList.remove('hidden');
     this.promptEl.classList.toggle('far', !!p.far);
-    this.promptEl.querySelector('kbd').textContent = p.key || 'E';
+    this.promptEl.querySelector('kbd').textContent = p.key || (TOUCH ? 'USE' : 'E');
     this.promptText.textContent = ' ' + p.text;
   }
   setCrosshair(state) {
@@ -3299,7 +3304,7 @@ class UI {
   setHeld(text) {
     const el = this.$('held-indicator');
     el.classList.toggle('hidden', !text);
-    if (text) el.innerHTML = `HOLDING ${text} · <kbd>E</kbd> or <kbd>CLICK</kbd> to drop`;
+    if (text) el.innerHTML = TOUCH ? `HOLDING ${text} · tap <kbd>USE</kbd> to drop` : `HOLDING ${text} · <kbd>E</kbd> or <kbd>CLICK</kbd> to drop`;
   }
   setGravity(show, up) {
     const el = this.$('gravity-indicator');
@@ -3368,6 +3373,114 @@ class UI {
 }
 
 /* ---------------------------------------------------------------------
+   Touch controls: a floating joystick on the left half of the screen,
+   drag-to-look on the right half, and on-screen action buttons.
+   --------------------------------------------------------------------- */
+class TouchControls {
+  constructor(game) {
+    this.game = game;
+    this.el = document.getElementById('touch-controls');
+    this.base = document.getElementById('joy-base');
+    this.knob = document.getElementById('joy-knob');
+    this.ghost = document.getElementById('joy-ghost');
+    this.useBtn = document.getElementById('tbtn-use');
+    this.R = 56;
+    this.useState = '';
+    this.reset();
+    const el = this.el;
+    el.addEventListener('pointerdown', (e) => this.down(e));
+    el.addEventListener('pointermove', (e) => this.move(e));
+    el.addEventListener('pointerup', (e) => this.up(e));
+    el.addEventListener('pointercancel', (e) => this.up(e));
+    el.addEventListener('lostpointercapture', (e) => this.up(e));
+    el.addEventListener('contextmenu', (e) => e.preventDefault());
+  }
+  reset() {
+    this.moveId = null;
+    this.lookId = null;
+    this.moveX = 0; this.moveY = 0; this.sprint = false;
+    this.lookDX = 0; this.lookDY = 0;
+    if (this.base) {
+      this.base.classList.remove('active', 'sprint');
+      this.ghost.classList.remove('hidden-ghost');
+      this.knob.style.transform = '';
+    }
+  }
+  down(e) {
+    e.preventDefault();
+    this.game.audio.init();
+    const b = e.target.closest('[data-touch]');
+    if (b) {
+      b.classList.add('down');
+      setTimeout(() => b.classList.remove('down'), 140);
+      this.press(b.dataset.touch);
+      return;
+    }
+    try { this.el.setPointerCapture(e.pointerId); } catch (err) { /* not capturable */ }
+    if (e.clientX < window.innerWidth * 0.45 && this.moveId === null) {
+      this.moveId = e.pointerId;
+      this.ox = e.clientX; this.oy = e.clientY;
+      this.base.style.left = `${this.ox}px`;
+      this.base.style.top = `${this.oy}px`;
+      this.base.classList.add('active');
+      this.ghost.classList.add('hidden-ghost');
+      this.knob.style.transform = '';
+    } else if (this.lookId === null) {
+      this.lookId = e.pointerId;
+      this.lx = e.clientX; this.ly = e.clientY;
+    }
+  }
+  move(e) {
+    if (e.pointerId === this.moveId) {
+      let dx = e.clientX - this.ox, dy = e.clientY - this.oy;
+      const d = Math.hypot(dx, dy);
+      this.sprint = d > this.R * 1.3;
+      if (d > this.R) { dx *= this.R / d; dy *= this.R / d; }
+      this.knob.style.transform = `translate(${dx}px, ${dy}px)`;
+      const dead = 0.14;
+      const mag = Math.min(1, d / this.R);
+      const k = mag < dead ? 0 : (mag - dead) / (1 - dead) / (mag || 1);
+      this.moveX = (dx / this.R) * k;
+      this.moveY = (dy / this.R) * k;
+      this.base.classList.toggle('sprint', this.sprint);
+    } else if (e.pointerId === this.lookId) {
+      this.lookDX += e.clientX - this.lx;
+      this.lookDY += e.clientY - this.ly;
+      this.lx = e.clientX; this.ly = e.clientY;
+    }
+  }
+  up(e) {
+    if (e.pointerId === this.moveId) {
+      this.moveId = null;
+      this.moveX = 0; this.moveY = 0; this.sprint = false;
+      this.base.classList.remove('active', 'sprint');
+      this.ghost.classList.remove('hidden-ghost');
+    } else if (e.pointerId === this.lookId) {
+      this.lookId = null;
+    }
+  }
+  press(action) {
+    const g = this.game;
+    if (navigator.vibrate) { try { navigator.vibrate(10); } catch (err) { /* unsupported */ } }
+    if (action === 'pause') { g.pause(); return; }
+    const code = { jump: 'Space', use: 'KeyE', reset: 'KeyR', hint: 'KeyH' }[action];
+    if (code) g.pressed.add(code);
+  }
+  consumeLook() {
+    const d = [this.lookDX, this.lookDY];
+    this.lookDX = 0; this.lookDY = 0;
+    return d;
+  }
+  setUse(state) {
+    if (state === this.useState) return;
+    this.useState = state;
+    this.useBtn.classList.toggle('ready', state === 'ready');
+    this.useBtn.classList.toggle('holding', state === 'holding');
+    this.useBtn.textContent = state === 'holding' ? 'DROP' : 'USE';
+  }
+}
+
+/* ---------------------------------------------------------------------
    Game: renderer, main loop, state machine, input and level flow
    --------------------------------------------------------------------- */
 const QUALITY = {
@@ -3428,8 +3541,43 @@ class Game {
     this.clock = new THREE.Clock();
   }
   get quality() { return QUALITY[this.settings.quality] || QUALITY.high; }
+  get state() { return this._state; }
+  set state(v) {
+    this._state = v;
+    document.body.dataset.state = v;
+  }
+  detectTouch() {
+    const pref = this.settings.touch;
+    if (pref === 'on') return true;
+    if (pref === 'off') return false;
+    const mq = (q) => window.matchMedia && window.matchMedia(q).matches;
+    return mq('(pointer: coarse)') || (navigator.maxTouchPoints > 0 && !mq('(hover: hover)')) || !!this.sawTouch;
+  }
+  applyTouchMode() {
+    this.touchMode = this.detectTouch();
+    TOUCH = this.touchMode;
+    document.body.classList.toggle('touch', this.touchMode);
+    if (this.touchCtl) this.touchCtl.reset();
+    if (this.touchMode && document.pointerLockElement) document.exitPointerLock();
+    if (this.ui) { this.ui.lastPrompt = null; if (this.held) this.ui.setHeld(PROP_NAMES[this.held.kind].toUpperCase()); }
+  }
+  // Fullscreen + landscape lock where the browser allows it (Android); iOS
+  // gets the same effect from "Add to Home Screen".
+  enterFullscreen() {
+    if (!this.touchMode) return;
+    const d = document.documentElement;
+    if (document.fullscreenElement || !d.requestFullscreen) return;
+    try {
+      d.requestFullscreen({ navigationUI: 'hide' })
+        .then(() => { if (screen.orientation && screen.orientation.lock) screen.orientation.lock('landscape').catch(() => {}); })
+        .catch(() => {});
+    } catch (e) { /* not allowed */ }
+  }
 
   start() {
+    this.applyTouchMode();
+    // First run on a phone or tablet: start with lighter graphics.
+    if (this.save.isNew && this.touchMode) this.settings.quality = (navigator.hardwareConcurrency || 4) <= 4 ? 'low' : 'medium';
     const probe = document.createElement('canvas');
     let gl2 = null;
     try { gl2 = probe.getContext('webgl2'); } catch (e) { gl2 = null; }
@@ -3465,15 +3613,22 @@ class Game {
     this.portalCam = new THREE.PerspectiveCamera();
     this.portalCam.layers.enable(1);
 
-    this.composer = new EffectComposer(r);
+    // Many mobile GPUs can't render to half-float targets: fall back to 8-bit.
+    const halfOK = r.extensions.has('EXT_color_buffer_float') || r.extensions.has('EXT_color_buffer_half_float');
+    this.rtType = halfOK ? THREE.HalfFloatType : THREE.UnsignedByteType;
+    this.bloomSupported = halfOK;
+    const pr0 = r.getPixelRatio();
+    this.composer = halfOK ? new EffectComposer(r)
+      : new EffectComposer(r, new THREE.WebGLRenderTarget(window.innerWidth * pr0, window.innerHeight * pr0, { type: THREE.UnsignedByteType }));
     this.renderPass = new RenderPass(new THREE.Scene(), this.camera);
     this.bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.55, 0.4, 1.0);
     this.composer.addPass(this.renderPass);
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
-    this.bloom.enabled = this.quality.bloom;
+    this.bloom.enabled = this.quality.bloom && this.bloomSupported;
 
     this.audio = new AudioEngine(this.settings);
+    this.touchCtl = new TouchControls(this);
     this.player = new Player(this);
     this.ui = new UI(this);
     this.menu = new MenuScene(this);
@@ -3503,6 +3658,10 @@ class Game {
       if (e.code === 'KeyP' && this.state === 'playing') this.pause();
     });
     window.addEventListener('keyup', (e) => { this.keys[e.code] = false; });
+    window.addEventListener('touchstart', () => {
+      if (!this.sawTouch) { this.sawTouch = true; if (!this.touchMode) this.applyTouchMode(); }
+    }, { passive: true });
+    window.addEventListener('touchend', () => this.audio.init(), { passive: true });
     window.addEventListener('blur', () => { this.keys = {}; if (this.state === 'playing') this.pause(); });
     document.addEventListener('visibilitychange', () => { if (document.hidden && this.state === 'playing') this.pause(); });
     document.addEventListener('mousemove', (e) => {
@@ -3526,7 +3685,7 @@ class Game {
       if (this.locked) {
         this.lockFailures = 0;
         if (this.state === 'playing') this.ui.hideScreens();
-      } else if (this.state === 'playing' && !this.pointerFallback) {
+      } else if (this.state === 'playing' && !this.pointerFallback && !this.touchMode) {
         this.pause();
       }
     });
@@ -3534,7 +3693,7 @@ class Game {
   }
   lockPointer() {
     const c = this.renderer.domElement;
-    if (this.pointerFallback) return;
+    if (this.pointerFallback || this.touchMode) return;
     if (!c.requestPointerLock) { this.enableFallback(); return; }
     try {
       const p = c.requestPointerLock();
@@ -3561,14 +3720,16 @@ class Game {
     if (this.state === 'playing') this.pause();
   }
   input() {
-    const k = this.keys;
+    const k = this.keys, t = this.touchCtl;
+    const [lx, ly] = t.consumeLook();
+    const TOUCH_LOOK = 1.6; // touch drags cover fewer pixels than mouse motion
     return {
-      forward: (k.KeyW || k.ArrowUp ? 1 : 0) - (k.KeyS || k.ArrowDown ? 1 : 0),
-      strafe: (k.KeyD || k.ArrowRight ? 1 : 0) - (k.KeyA || k.ArrowLeft ? 1 : 0),
-      sprint: !!(k.ShiftLeft || k.ShiftRight),
+      forward: clamp((k.KeyW || k.ArrowUp ? 1 : 0) - (k.KeyS || k.ArrowDown ? 1 : 0) - t.moveY, -1, 1),
+      strafe: clamp((k.KeyD || k.ArrowRight ? 1 : 0) - (k.KeyA || k.ArrowLeft ? 1 : 0) + t.moveX, -1, 1),
+      sprint: !!(k.ShiftLeft || k.ShiftRight) || t.sprint,
       jumpPressed: this.pressed.has('Space'),
-      mouseDX: this.mouseDX,
-      mouseDY: this.mouseDY,
+      mouseDX: this.mouseDX + lx * TOUCH_LOOK,
+      mouseDY: this.mouseDY + ly * TOUCH_LOOK,
     };
   }
 
@@ -3595,7 +3756,7 @@ class Game {
       case 'restart': this.restartLevel(); break;
       case 'controls': ui.showScreen('controls-overlay'); break;
       case 'controls-ok':
-        if (this.state === 'intro') { this.state = 'playing'; ui.hideScreens(); this.lockPointer(); }
+        if (this.state === 'intro') { this.state = 'playing'; ui.hideScreens(); this.enterFullscreen(); this.lockPointer(); }
         else ui.showScreen('menu-pause');
         break;
       case 'main-menu': this.goToMenu(); break;
@@ -3613,7 +3774,8 @@ class Game {
     const pr = Math.min(window.devicePixelRatio || 1, q.pixelRatio);
     this.renderer.setPixelRatio(pr);
     this.composer.setPixelRatio(pr);
-    this.bloom.enabled = q.bloom;
+    this.bloom.enabled = q.bloom && this.bloomSupported;
+    this.applyTouchMode();
     if (this.renderer.shadowMap.enabled !== q.shadows) {
       this.renderer.shadowMap.enabled = q.shadows;
       if (this.level) this.level.scene.traverse((o) => { if (o.material) [].concat(o.material).forEach((m) => { m.needsUpdate = true; }); });
@@ -3624,6 +3786,7 @@ class Game {
   }
   startLevel(i) {
     this.audio.init();
+    this.enterFullscreen();
     this.ui.fade(1, 0);
     this.loadLevel(i, 0, true);
     this.ui.showHUD(true);
@@ -3684,11 +3847,13 @@ class Game {
     this.ui.showScreen('menu-pause');
     this.ui.setPrompt(null);
     if (document.pointerLockElement) document.exitPointerLock();
+    this.touchCtl.reset();
   }
   resume() {
     if (this.state !== 'paused' && this.state !== 'playing') return;
     this.state = 'playing';
     this.ui.hideScreens();
+    this.enterFullscreen();
     this.lockPointer();
   }
   goToMenu() {
@@ -3979,6 +4144,8 @@ class Game {
     const L = this.level;
     const pl = this.player;
     if (!L) return;
+    // Phones held upright show a "rotate" overlay; hold the simulation still.
+    if (this.touchMode && window.innerHeight > window.innerWidth) { this.ui.setPrompt(null); return; }
     this.levelTime += dt;
     this.ui.setTimer(this.levelTime);
     if (this.pressed.has('KeyR') && !this.respawning) { this.respawn('PUZZLE RESET — BACK TO CHECKPOINT', ''); return; }
@@ -4003,6 +4170,7 @@ class Game {
     if (L.isOutOfBounds(pl.pos) && !this.respawning) { this.respawn('SIGNAL LOST — RETURNING TO CHECKPOINT'); return; }
     this.updateTarget();
     this.handleInteract();
+    if (this.touchMode) this.touchCtl.setUse(this.held ? 'holding' : this.target && !this.target.out ? 'ready' : '');
     this.ui.setGravity(L.showGravity, pl.up);
   }
   updateFinale(dt) {

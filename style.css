@@ -28,7 +28,15 @@ html, body {
   font-family: var(--font-body);
   user-select: none;
   -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
 }
+body.touch, body.touch #app canvas { touch-action: none; }
+
+/* Show/hide content depending on the input mode. */
+body:not(.touch) .touch-only { display: none !important; }
+body.touch .desktop-only { display: none !important; }
 
 #app, #app canvas {
   position: fixed;
@@ -502,3 +510,171 @@ input[type='checkbox'] { accent-color: var(--cyan); width: 20px; height: 20px; }
 
 #boot-error { z-index: 60; background: #04060b; }
 #boot-error p { font-size: 1.1rem; line-height: 1.45; }
+
+/* =========================================================
+   Touch / mobile
+   ========================================================= */
+#touch-controls {
+  position: fixed;
+  inset: 0;
+  z-index: 12;
+  display: none;
+  touch-action: none;
+}
+body.touch[data-state="playing"] #touch-controls { display: block; }
+
+#joy-ghost, #joy-base {
+  position: absolute;
+  width: 128px;
+  height: 128px;
+  margin: -64px 0 0 -64px;
+  border-radius: 50%;
+  pointer-events: none;
+}
+#joy-ghost {
+  left: calc(110px + env(safe-area-inset-left));
+  bottom: calc(46px + env(safe-area-inset-bottom));
+  margin: 0 0 -64px -64px;
+  border: 2px dashed rgba(79, 216, 255, 0.22);
+}
+#joy-ghost span {
+  position: absolute; left: 50%; top: 50%;
+  width: 46px; height: 46px; margin: -23px 0 0 -23px;
+  border-radius: 50%;
+  background: rgba(79, 216, 255, 0.12);
+}
+#joy-base {
+  display: none;
+  border: 2px solid rgba(79, 216, 255, 0.45);
+  background: radial-gradient(circle, rgba(79, 216, 255, 0.12), rgba(4, 8, 16, 0.25));
+}
+#joy-base.active { display: block; }
+#joy-ghost.hidden-ghost { opacity: 0; }
+#joy-knob {
+  position: absolute; left: 50%; top: 50%;
+  width: 56px; height: 56px; margin: -28px 0 0 -28px;
+  border-radius: 50%;
+  background: rgba(79, 216, 255, 0.35);
+  border: 2px solid var(--cyan);
+  box-shadow: 0 0 14px var(--cyan-dim);
+}
+#joy-base.sprint #joy-knob { background: rgba(255, 196, 87, 0.45); border-color: var(--amber); box-shadow: 0 0 16px rgba(255, 196, 87, 0.6); }
+
+.tbtn {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 50%;
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--ink);
+  background: rgba(8, 14, 26, 0.45);
+  border: 2px solid var(--cyan-dim);
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.tbtn.big { width: 82px; height: 82px; font-size: 0.72rem; }
+.tbtn.small { position: static; width: 46px; height: 46px; font-size: 1rem; letter-spacing: 0; }
+.tbtn.down { background: rgba(79, 216, 255, 0.45); transform: scale(0.94); }
+#tbtn-jump { right: calc(22px + env(safe-area-inset-right)); bottom: calc(26px + env(safe-area-inset-bottom)); }
+#tbtn-use { right: calc(120px + env(safe-area-inset-right)); bottom: calc(66px + env(safe-area-inset-bottom)); }
+#tbtn-use.ready {
+  color: #04060b;
+  background: rgba(79, 216, 255, 0.85);
+  border-color: var(--cyan);
+  box-shadow: 0 0 20px var(--cyan);
+  animation: usepulse 1.2s infinite;
+}
+#tbtn-use.holding { border-color: var(--violet); box-shadow: 0 0 14px var(--violet-dim); color: var(--violet); }
+@keyframes usepulse { 50% { box-shadow: 0 0 6px var(--cyan); } }
+.touch-bar {
+  position: absolute;
+  top: calc(10px + env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 10px;
+}
+
+#rotate-hint {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: #04060b;
+  font-family: var(--font-display);
+  letter-spacing: 0.25em;
+  color: var(--cyan);
+  text-align: center;
+  padding: 24px;
+}
+.rotate-icon {
+  width: 46px;
+  height: 78px;
+  border: 3px solid var(--cyan);
+  border-radius: 9px;
+  animation: rotatephone 2.2s ease-in-out infinite;
+  margin-bottom: 14px;
+}
+@keyframes rotatephone { 0%, 30% { transform: rotate(0deg); } 60%, 100% { transform: rotate(-90deg); } }
+@media (orientation: portrait) {
+  body.touch[data-state="playing"] #rotate-hint,
+  body.touch[data-state="intro"] #rotate-hint { display: flex; }
+}
+
+/* HUD and menus on touch devices / small screens */
+body.touch #hint-key { display: none; }
+body.touch #prompt { top: calc(50% + 26px); }
+body.touch #held-indicator { bottom: calc(118px + env(safe-area-inset-bottom)); }
+body.touch #objective-panel { left: calc(14px + env(safe-area-inset-left)); top: calc(12px + env(safe-area-inset-top)); }
+body.touch #status-panel { right: calc(14px + env(safe-area-inset-right)); top: calc(12px + env(safe-area-inset-top)); }
+body.touch #hint-panel { left: calc(200px + env(safe-area-inset-left)); bottom: calc(14px + env(safe-area-inset-bottom)); max-width: min(380px, 40vw); }
+
+@media (max-width: 960px), (max-height: 520px) {
+  #objective-panel { max-width: min(330px, 38vw); padding: 8px 12px 9px; }
+  #level-label { font-size: 0.6rem; }
+  #level-name { font-size: 0.85rem; margin-bottom: 5px; }
+  #objective { font-size: 0.88rem; }
+  .obj-tag { display: none; }
+  #timer { font-size: 0.9rem; }
+  .pip { width: 18px; height: 6px; }
+  #gravity-indicator { font-size: 0.6rem; margin-top: 6px; }
+  #prompt { font-size: 0.9rem; }
+  #toast { font-size: 0.72rem; letter-spacing: 0.14em; top: 22%; }
+  #hint-text { font-size: 0.9rem; padding: 7px 10px; }
+  .panel { padding: 18px 20px; }
+  .panel h2 { font-size: 1.05rem; margin-bottom: 12px; }
+  .btn { min-width: 130px; padding: 0.6em 1.2em; font-size: 0.75rem; }
+  .controls-grid { font-size: 0.95rem; gap: 6px 14px; }
+  .lc-time { font-size: 1.5rem; }
+  .lc-time.big { font-size: 2.2rem; }
+}
+@media (max-height: 520px) {
+  .menu-inner { gap: 14px; }
+  .title { font-size: clamp(1.6rem, 9vh, 3rem); margin: 4px 0; }
+  .title-sub { font-size: 0.8rem; }
+  .title-kicker { font-size: 0.6rem; }
+  .menu-buttons { gap: 7px; width: min(260px, 100%); }
+  .menu-footer { bottom: 6px; font-size: 0.7rem; }
+  .menu-progress { font-size: 0.8rem; }
+  #level-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+  .level-card { min-height: 112px; padding: 10px 9px; }
+  .level-card .lv-num { font-size: 1.4rem; }
+  .level-card .lv-name { font-size: 0.58rem; }
+  .level-card .lv-meta { font-size: 0.78rem; }
+  .settings-grid { gap: 6px; }
+  .settings-grid label { font-size: 0.92rem; }
+  .credits p { font-size: 0.92rem; margin-bottom: 8px; }
+  #victory-breakdown { font-size: 0.85rem; margin: 6px auto; }
+  .panel-actions { margin-top: 12px; }
+}
+body.touch .panel, body.touch .screen { touch-action: pan-y; }
+.panel.narrow .menu-buttons { margin: 0 auto; }

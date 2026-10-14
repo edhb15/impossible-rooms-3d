@@ -24,15 +24,43 @@ Then open **http://localhost:8000** in a desktop browser.
 If you open `index.html` by double-clicking it, the page shows a message explaining that a local server is needed.
 
 **Requirements**
-- A current desktop browser with **WebGL 2**: Chrome, Edge, Firefox or Safari.
-- A mouse and keyboard. The game uses the Pointer Lock API for mouse look.
+- A current browser with **WebGL 2**: Chrome, Edge, Firefox or Safari on desktop, or Chrome / Safari on a phone or tablet (iOS 15+, recent Android).
+- A mouse and keyboard, **or** a touchscreen. The desktop version uses the Pointer Lock API for mouse look; phones and tablets get on-screen touch controls automatically.
 - three.js is included in `lib/`, so the game itself works offline. The only network request is for the Google Fonts (Orbitron / Rajdhani). If that request fails, the game falls back to system fonts.
 
 If WebGL 2 is unavailable, the game shows an explanation instead of a blank page.
 
+### Playing on a phone or tablet
+
+The same page is the mobile version. It switches to touch controls automatically when it detects a touchscreen.
+
+1. Serve the folder on your network so your phone can reach it, e.g. `python3 -m http.server 8000 --bind 0.0.0.0`, then open `http://<your-computer's-IP>:8000` on the phone (both devices on the same Wi-Fi). Or host the folder on any static host (GitHub Pages, Netlify, …).
+2. Hold the phone in **landscape**. In portrait the game pauses and asks you to rotate.
+3. For true fullscreen:
+   - **Android (Chrome):** the game goes fullscreen and locks to landscape when you tap Play. You can also use *Add to Home screen* to install it as an app.
+   - **iPhone / iPad (Safari):** Safari can't make a web page fullscreen, so use *Share → Add to Home Screen* and launch it from the icon. It then opens fullscreen with no browser bars.
+
+On first launch on a touch device, the graphics quality defaults to *Medium*, or *Low* on devices with 4 or fewer CPU cores. You can change this in Settings. **Settings → Touch controls** can force touch controls on (for example on a touchscreen laptop) or off (for example on a tablet with a keyboard and mouse).
+
 ---
 
 ## Controls
+
+### Touch
+
+| Control | Action |
+|---|---|
+| **Left thumb**: drag anywhere on the left half | Move (a joystick appears under your thumb). Push it all the way to sprint. |
+| **Right thumb**: drag anywhere on the right half | Look around |
+| **JUMP** | Jump |
+| **USE** | Interact, pick up, use panels. The button lights up when the crosshair is on something usable, and becomes **DROP** while you're holding something. |
+| **↺** | Reset the puzzle to the last checkpoint |
+| **?** | Show the next hint |
+| **❚❚** | Pause |
+
+You can move and look at the same time, with one thumb on each side of the screen.
+
+### Keyboard and mouse
 
 | Input | Action |
 |---|---|
@@ -77,7 +105,7 @@ Each level has an on-screen objective that updates as you progress, plus optiona
 - **HUD:** crosshair, interaction prompts, level name and objective, hints, a progress bar with one marker per level, the level timer, and a gravity indicator in the gravity levels.
 - **Pause menu** (Esc): Resume, Restart Level, Controls, Settings, Main Menu.
 - **Victory screen:** total completion time with a per-level breakdown, and a Replay button.
-- **Settings:** master / music / effects volume, mute, mouse sensitivity, invert Y, field of view, graphics quality (Low / Medium / High), auto-show hints, head bob.
+- **Settings:** master / music / effects volume, mute, look sensitivity, invert Y, field of view, graphics quality (Low / Medium / High), auto-show hints, head bob, touch controls (Auto / On / Off).
 
 Progress, best times and settings are saved in `localStorage` under the key `impossibleRooms.save.v1`. **Settings → Reset Progress** clears levels and times but keeps your settings.
 
@@ -97,9 +125,11 @@ Progress, best times and settings are saved in `localStorage` under the key `imp
 ## Project structure
 
 ```
-index.html        Page shell, HUD/menus markup, import map, boot error handling
-style.css         Interface styles
+index.html        Page shell, HUD/menus/touch-controls markup, import map, boot error handling
+style.css         Interface styles (desktop and mobile)
 game.js           The whole game (ES module)
+manifest.webmanifest, icon.svg, icon-*.png
+                  "Add to Home Screen" support: fullscreen, landscape, app icon
 lib/
   three.module.min.js            three.js r170 (MIT)
   addons/postprocessing/...      EffectComposer, RenderPass, UnrealBloomPass, OutputPass
@@ -115,7 +145,8 @@ lib/
 4. Entities: `Switch`, `Door`, `PressurePlate`, `PhysObject`, `Socket`, `GravityPanel`, `Trigger`, `MovingPlatform`, `RotatingGroup`, `Portal`, `PerspectiveBridge`, `PerspectiveGlyph`, `ParticleField`
 5. The `Level` base class with builder helpers, then `Level1` … `Level5`
 6. The menu backdrop (an impossible triangle that only closes from one viewpoint) and the `UI` controller
-7. `Game`: renderer, post-processing, main loop, state machine, input, holding/interaction, portal rendering and level flow
+7. `TouchControls`: floating joystick, drag-to-look and on-screen buttons
+8. `Game`: renderer, post-processing, main loop, state machine, input, holding/interaction, portal rendering and level flow
 
 `window.IR` exposes the running game instance in the browser console.
 
@@ -126,6 +157,8 @@ lib/
 - **"Please use a local server"**: see [Running the game](#running-the-game).
 - **The mouse doesn't lock**: click inside the game. If you just pressed Esc, browsers make you wait about a second before the mouse can be locked again. If pointer lock is blocked entirely (for example in some embedded frames), the game switches to hold-a-mouse-button-and-drag to look.
 - **Low frame rate**: set **Settings → Graphics quality** to *Medium* or *Low*. This lowers the resolution scale, shadows, bloom and portal resolution.
+- **Touch controls missing / showing on a laptop**: change **Settings → Touch controls** (Auto-detect / Always on / Off).
+- **The page zooms or scrolls on a phone**: launch it from the home screen icon (see [Playing on a phone or tablet](#playing-on-a-phone-or-tablet)). Pinch-zoom and scrolling are disabled while you play.
 - **No sound**: the browser only starts audio after your first click. Also check the volume sliders and the mute toggle in Settings.
 
 ---

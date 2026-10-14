@@ -2,7 +2,15 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#04060b" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Impossible Rooms" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icon-180.png" />
   <title>IMPOSSIBLE ROOMS</title>
   <meta name="description" content="A first-person 3D puzzle game of impossible architecture, portals and shifting gravity." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -47,6 +55,20 @@
     <div id="held-indicator" class="hidden"></div>
   </div>
 
+  <!-- ===================== TOUCH CONTROLS ===================== -->
+  <div id="touch-controls" aria-hidden="true">
+    <div id="joy-ghost"><span></span></div>
+    <div id="joy-base"><div id="joy-knob"></div></div>
+    <div class="touch-bar">
+      <button class="tbtn small" data-touch="pause" aria-label="Pause">❚❚</button>
+      <button class="tbtn small" data-touch="hint" aria-label="Hint">?</button>
+      <button class="tbtn small" data-touch="reset" aria-label="Reset puzzle">↺</button>
+    </div>
+    <button class="tbtn big" id="tbtn-use" data-touch="use">USE</button>
+    <button class="tbtn big" id="tbtn-jump" data-touch="jump">JUMP</button>
+  </div>
+  <div id="rotate-hint"><div class="rotate-icon"></div><div>ROTATE YOUR DEVICE</div><div class="dim small">Impossible Rooms plays in landscape</div></div>
+
   <div id="flash"></div>
   <div id="fade"></div>
 
@@ -66,7 +88,7 @@
       </nav>
       <div class="menu-progress" id="menu-progress"></div>
     </div>
-    <div class="menu-footer">Best experienced with headphones · Desktop browser · Mouse &amp; keyboard</div>
+    <div class="menu-footer">Best experienced with headphones · <span class="desktop-only">Mouse &amp; keyboard</span><span class="touch-only">Touch controls · landscape</span></div>
   </div>
 
   <!-- ===================== LEVEL SELECT ===================== -->
@@ -87,7 +109,7 @@
         <label>Music volume <input type="range" min="0" max="1" step="0.01" data-setting="music" /><output></output></label>
         <label>Effects volume <input type="range" min="0" max="1" step="0.01" data-setting="sfx" /><output></output></label>
         <label class="check">Mute all sound <input type="checkbox" data-setting="muted" /></label>
-        <label>Mouse sensitivity <input type="range" min="0.2" max="3" step="0.05" data-setting="sensitivity" /><output></output></label>
+        <label>Look sensitivity <input type="range" min="0.2" max="3" step="0.05" data-setting="sensitivity" /><output></output></label>
         <label class="check">Invert mouse Y <input type="checkbox" data-setting="invertY" /></label>
         <label>Field of view <input type="range" min="60" max="100" step="1" data-setting="fov" /><output></output></label>
         <label>Graphics quality
@@ -99,6 +121,13 @@
         </label>
         <label class="check">Auto-show hints <input type="checkbox" data-setting="hints" /></label>
         <label class="check">Head bob <input type="checkbox" data-setting="headBob" /></label>
+        <label>Touch controls
+          <select data-setting="touch">
+            <option value="auto">Auto-detect</option>
+            <option value="on">Always on</option>
+            <option value="off">Off</option>
+          </select>
+        </label>
       </div>
       <div class="panel-actions">
         <button class="btn danger" data-action="reset-progress">RESET PROGRESS</button>
@@ -142,7 +171,16 @@
   <div id="controls-overlay" class="screen hidden">
     <div class="panel">
       <h2>CONTROLS</h2>
-      <div class="controls-grid">
+      <div class="controls-grid touch-only">
+        <div><kbd class="wide">LEFT THUMB</kbd></div><div>Drag anywhere on the left half to move · push fully to sprint</div>
+        <div><kbd class="wide">RIGHT THUMB</kbd></div><div>Drag anywhere on the right half to look around</div>
+        <div><kbd class="wide">JUMP</kbd></div><div>Jump</div>
+        <div><kbd class="wide">USE</kbd></div><div>Interact · pick up · drop · use panels</div>
+        <div><kbd>↺</kbd></div><div>Reset puzzle (return to last checkpoint)</div>
+        <div><kbd>?</kbd></div><div>Show next hint</div>
+        <div><kbd>❚❚</kbd></div><div>Pause</div>
+      </div>
+      <div class="controls-grid desktop-only">
         <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></div><div>Move</div>
         <div><kbd class="wide">MOUSE</kbd></div><div>Look around</div>
         <div><kbd class="wide">SPACE</kbd></div><div>Jump</div>
@@ -154,13 +192,13 @@
         <div><kbd class="wide">ESC</kbd></div><div>Pause &amp; release mouse</div>
       </div>
       <p class="dim small center">Look at objects with the crosshair — a prompt appears when something can be used.</p>
-      <div class="panel-actions"><button class="btn primary" data-action="controls-ok">CLICK TO BEGIN</button></div>
+      <div class="panel-actions"><button class="btn primary" data-action="controls-ok"><span class="desktop-only">CLICK TO BEGIN</span><span class="touch-only">TAP TO BEGIN</span></button></div>
     </div>
   </div>
 
   <!-- ===================== CLICK TO RESUME ===================== -->
   <div id="click-resume" class="screen hidden">
-    <div class="resume-card">CLICK TO RESUME</div>
+    <div class="resume-card"><span class="desktop-only">CLICK</span><span class="touch-only">TAP</span> TO RESUME</div>
   </div>
 
   <!-- ===================== LEVEL COMPLETE ===================== -->
