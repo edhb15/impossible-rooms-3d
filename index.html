@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>IMPOSSIBLE ROOMS</title>
+  <meta name="description" content="A first-person 3D puzzle game of impossible architecture, portals and shifting gravity." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "./lib/three.module.min.js",
+        "three/addons/": "./lib/addons/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="app"></div>
+
+  <!-- ===================== HUD ===================== -->
+  <div id="hud" class="hidden">
+    <div id="crosshair"><span></span></div>
+    <div id="prompt" class="hidden"><kbd>E</kbd><span id="prompt-text"></span></div>
+
+    <div id="objective-panel">
+      <div id="level-label">LEVEL 1</div>
+      <div id="level-name">THE BEGINNING</div>
+      <div id="objective"><span class="obj-tag">OBJECTIVE</span><span id="objective-text"></span></div>
+    </div>
+
+    <div id="status-panel">
+      <div id="progress-pips"></div>
+      <div id="timer">00:00.0</div>
+      <div id="gravity-indicator" class="hidden"><span class="g-arrow">▼</span><span id="gravity-text">FLOOR</span></div>
+    </div>
+
+    <div id="hint-panel">
+      <div id="hint-key"><kbd>H</kbd> HINT <span id="hint-count"></span></div>
+      <div id="hint-text" class="hidden"></div>
+    </div>
+
+    <div id="toast" class="hidden"></div>
+    <div id="held-indicator" class="hidden"></div>
+  </div>
+
+  <div id="flash"></div>
+  <div id="fade"></div>
+
+  <!-- ===================== MAIN MENU ===================== -->
+  <div id="menu-main" class="screen hidden">
+    <div class="menu-inner">
+      <div class="title-block">
+        <div class="title-kicker">FACILITY 0 // SUBJECT AWAKENING</div>
+        <h1 class="title" data-text="IMPOSSIBLE ROOMS">IMPOSSIBLE ROOMS</h1>
+        <div class="title-sub">space is a suggestion. gravity is a choice.</div>
+      </div>
+      <nav class="menu-buttons">
+        <button class="btn primary" data-action="play" id="btn-play">PLAY</button>
+        <button class="btn" data-action="levels">LEVEL SELECT</button>
+        <button class="btn" data-action="settings">SETTINGS</button>
+        <button class="btn" data-action="credits">CREDITS</button>
+      </nav>
+      <div class="menu-progress" id="menu-progress"></div>
+    </div>
+    <div class="menu-footer">Best experienced with headphones · Desktop browser · Mouse &amp; keyboard</div>
+  </div>
+
+  <!-- ===================== LEVEL SELECT ===================== -->
+  <div id="menu-levels" class="screen hidden">
+    <div class="panel wide">
+      <h2>LEVEL SELECT</h2>
+      <div id="level-grid"></div>
+      <div class="panel-actions"><button class="btn" data-action="back">BACK</button></div>
+    </div>
+  </div>
+
+  <!-- ===================== SETTINGS ===================== -->
+  <div id="menu-settings" class="screen hidden">
+    <div class="panel">
+      <h2>SETTINGS</h2>
+      <div class="settings-grid">
+        <label>Master volume <input type="range" min="0" max="1" step="0.01" data-setting="master" /><output></output></label>
+        <label>Music volume <input type="range" min="0" max="1" step="0.01" data-setting="music" /><output></output></label>
+        <label>Effects volume <input type="range" min="0" max="1" step="0.01" data-setting="sfx" /><output></output></label>
+        <label class="check">Mute all sound <input type="checkbox" data-setting="muted" /></label>
+        <label>Mouse sensitivity <input type="range" min="0.2" max="3" step="0.05" data-setting="sensitivity" /><output></output></label>
+        <label class="check">Invert mouse Y <input type="checkbox" data-setting="invertY" /></label>
+        <label>Field of view <input type="range" min="60" max="100" step="1" data-setting="fov" /><output></output></label>
+        <label>Graphics quality
+          <select data-setting="quality">
+            <option value="low">Low (fast)</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+          </select>
+        </label>
+        <label class="check">Auto-show hints <input type="checkbox" data-setting="hints" /></label>
+        <label class="check">Head bob <input type="checkbox" data-setting="headBob" /></label>
+      </div>
+      <div class="panel-actions">
+        <button class="btn danger" data-action="reset-progress">RESET PROGRESS</button>
+        <button class="btn" data-action="back">BACK</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== CREDITS ===================== -->
+  <div id="menu-credits" class="screen hidden">
+    <div class="panel">
+      <h2>CREDITS</h2>
+      <div class="credits">
+        <p><b>IMPOSSIBLE ROOMS</b><br />A first-person puzzle game about space, perspective and gravity.</p>
+        <p><span class="dim">Design, code, geometry, textures &amp; audio</span><br />Procedurally generated in the browser — no external models, images or sound files.</p>
+        <p><span class="dim">Rendering</span><br />three.js (MIT License) · WebGL 2</p>
+        <p><span class="dim">Audio</span><br />Web Audio API synthesis</p>
+        <p><span class="dim">Typography</span><br />Orbitron &amp; Rajdhani (SIL Open Font License)</p>
+        <p class="dim small">Inspired by impossible figures, Escher's architecture and every test chamber that ever lied to its subject.</p>
+      </div>
+      <div class="panel-actions"><button class="btn" data-action="back">BACK</button></div>
+    </div>
+  </div>
+
+  <!-- ===================== PAUSE ===================== -->
+  <div id="menu-pause" class="screen hidden">
+    <div class="panel narrow">
+      <h2>PAUSED</h2>
+      <div class="pause-info" id="pause-info"></div>
+      <nav class="menu-buttons">
+        <button class="btn primary" data-action="resume">RESUME</button>
+        <button class="btn" data-action="restart">RESTART LEVEL</button>
+        <button class="btn" data-action="controls">CONTROLS</button>
+        <button class="btn" data-action="settings">SETTINGS</button>
+        <button class="btn" data-action="main-menu">MAIN MENU</button>
+      </nav>
+    </div>
+  </div>
+
+  <!-- ===================== CONTROLS GUIDE ===================== -->
+  <div id="controls-overlay" class="screen hidden">
+    <div class="panel">
+      <h2>CONTROLS</h2>
+      <div class="controls-grid">
+        <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></div><div>Move</div>
+        <div><kbd class="wide">MOUSE</kbd></div><div>Look around</div>
+        <div><kbd class="wide">SPACE</kbd></div><div>Jump</div>
+        <div><kbd class="wide">SHIFT</kbd></div><div>Sprint</div>
+        <div><kbd>E</kbd></div><div>Interact · pick up · drop · use panels</div>
+        <div><kbd class="wide">CLICK</kbd></div><div>Lock mouse / drop held object</div>
+        <div><kbd>R</kbd></div><div>Reset puzzle (return to last checkpoint)</div>
+        <div><kbd>H</kbd></div><div>Show next hint</div>
+        <div><kbd class="wide">ESC</kbd></div><div>Pause &amp; release mouse</div>
+      </div>
+      <p class="dim small center">Look at objects with the crosshair — a prompt appears when something can be used.</p>
+      <div class="panel-actions"><button class="btn primary" data-action="controls-ok">CLICK TO BEGIN</button></div>
+    </div>
+  </div>
+
+  <!-- ===================== CLICK TO RESUME ===================== -->
+  <div id="click-resume" class="screen hidden">
+    <div class="resume-card">CLICK TO RESUME</div>
+  </div>
+
+  <!-- ===================== LEVEL COMPLETE ===================== -->
+  <div id="level-complete" class="screen hidden">
+    <div class="panel narrow center">
+      <div class="lc-kicker">CHAMBER CLEARED</div>
+      <h2 id="lc-title">LEVEL 1</h2>
+      <div class="lc-time" id="lc-time">00:00.0</div>
+      <div class="lc-best" id="lc-best"></div>
+      <div class="panel-actions"><button class="btn primary" data-action="next-level">CONTINUE</button></div>
+    </div>
+  </div>
+
+  <!-- ===================== VICTORY ===================== -->
+  <div id="victory" class="screen hidden">
+    <div class="panel center">
+      <div class="lc-kicker">YOU ESCAPED THE FACILITY</div>
+      <h2 class="victory-title">THE ROOMS RELEASE YOU</h2>
+      <div class="victory-label">TOTAL COMPLETION TIME</div>
+      <div class="lc-time big" id="victory-time">00:00.0</div>
+      <div id="victory-breakdown"></div>
+      <p class="dim small">Space bent. Gravity turned. Perspective lied. You walked out anyway.</p>
+      <div class="panel-actions">
+        <button class="btn primary" data-action="replay">REPLAY</button>
+        <button class="btn" data-action="main-menu">MAIN MENU</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== LOADING / ERRORS ===================== -->
+  <div id="loading" class="screen"><div class="loader"><div class="loader-ring"></div><div>INITIALISING FACILITY…</div></div></div>
+  <div id="boot-error" class="screen hidden">
+    <div class="panel narrow">
+      <h2 id="boot-error-title">CANNOT START</h2>
+      <div id="boot-error-text"></div>
+    </div>
+  </div>
+
+  <script>
+    // Plain (non-module) guard: explains failures that happen before the game module can run.
+    (function () {
+      function showError(title, html) {
+        var el = document.getElementById('boot-error');
+        document.getElementById('boot-error-title').textContent = title;
+        document.getElementById('boot-error-text').innerHTML = html;
+        el.classList.remove('hidden');
+        var ld = document.getElementById('loading');
+        if (ld) ld.classList.add('hidden');
+      }
+      window.__irShowError = showError;
+      window.addEventListener('error', function (e) {
+        if (window.__IR_STARTED) return;
+        var t = e && e.target;
+        if (t && (t.tagName === 'SCRIPT')) {
+          showError('FAILED TO LOAD', '<p>A script could not be loaded: <code>' + (t.src || 'unknown') + '</code></p><p>Make sure the <code>lib/</code> folder sits next to <code>index.html</code>.</p>');
+        }
+      }, true);
+      setTimeout(function () {
+        if (window.__IR_MODULE_LOADED) return;
+        if (location.protocol === 'file:') {
+          showError('PLEASE USE A LOCAL SERVER',
+            '<p>Browsers block JavaScript modules on <code>file://</code> pages, so the game cannot start when opened by double-clicking.</p>' +
+            '<p>From the game folder run one of:</p><pre>python3 -m http.server 8000\nnpx serve .</pre>' +
+            '<p>Then open <code>http://localhost:8000</code>.</p>');
+        } else {
+          showError('FAILED TO START', '<p>The game module did not load. Your browser may be too old (ES modules and import maps are required), or a file is missing.</p><p>Try a current version of Chrome, Edge, Firefox or Safari.</p>');
+        }
+      }, 6000);
+    })();
+  </script>
+  <script type="module" src="game.js"></script>
+</body>
+</html>
