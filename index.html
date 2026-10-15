@@ -12,10 +12,10 @@
   <link rel="icon" href="icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="icon-180.png" />
   <title>IMPOSSIBLE ROOMS</title>
-  <meta name="description" content="A first-person 3D puzzle game of impossible architecture, portals and shifting gravity." />
+  <meta name="description" content="A first-person 3D puzzle game of impossible architecture, portals and shifting gravity — and an ancient Maya temple full of puzzles and traps." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700;900&family=Orbitron:wght@500;700;900&family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
   <script type="importmap">
     {
@@ -44,6 +44,7 @@
       <div id="progress-pips"></div>
       <div id="timer">00:00.0</div>
       <div id="gravity-indicator" class="hidden"><span class="g-arrow">▼</span><span id="gravity-text">FLOOR</span></div>
+      <div id="relic-tray" class="hidden"></div>
     </div>
 
     <div id="hint-panel">
@@ -52,6 +53,7 @@
     </div>
 
     <div id="toast" class="hidden"></div>
+    <div id="chapter-card"></div>
     <div id="held-indicator" class="hidden"></div>
   </div>
 
@@ -145,8 +147,8 @@
         <p><span class="dim">Design, code, geometry, textures &amp; audio</span><br />Procedurally generated in the browser — no external models, images or sound files.</p>
         <p><span class="dim">Rendering</span><br />three.js (MIT License) · WebGL 2</p>
         <p><span class="dim">Audio</span><br />Web Audio API synthesis</p>
-        <p><span class="dim">Typography</span><br />Orbitron &amp; Rajdhani (SIL Open Font License)</p>
-        <p class="dim small">Inspired by impossible figures, Escher's architecture and every test chamber that ever lied to its subject.</p>
+        <p><span class="dim">Typography</span><br />Orbitron, Rajdhani &amp; Cinzel (SIL Open Font License)</p>
+        <p class="dim small">Inspired by impossible figures, Escher's architecture and every test chamber that ever lied to its subject. Part II borrows from Maya architecture and lore: corbel vaults, the feathered serpent Kukulkan, bar-and-dot numerals and the five world directions.</p>
       </div>
       <div class="panel-actions"><button class="btn" data-action="back">BACK</button></div>
     </div>
@@ -212,15 +214,31 @@
     </div>
   </div>
 
+  <!-- ===================== PART I COMPLETE ===================== -->
+  <div id="chapter-complete" class="screen hidden">
+    <div class="panel center">
+      <div class="lc-kicker">YOU ESCAPED THE FACILITY</div>
+      <h2 class="victory-title">THE ROOMS RELEASE YOU…</h2>
+      <p class="chapter-teaser">…but the light did not set you down where you started. Warm air. Insects singing. Stone steps rising out of a jungle under a full moon.</p>
+      <div class="victory-label">PART I COMPLETION TIME</div>
+      <div class="lc-time big" id="chapter-time">00:00.0</div>
+      <div id="chapter-breakdown" class="breakdown"></div>
+      <div class="panel-actions">
+        <button class="btn primary" data-action="next-level">ENTER THE TEMPLE</button>
+        <button class="btn" data-action="main-menu">MAIN MENU</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ===================== VICTORY ===================== -->
   <div id="victory" class="screen hidden">
     <div class="panel center">
-      <div class="lc-kicker">YOU ESCAPED THE FACILITY</div>
+      <div class="lc-kicker">YOU ESCAPED THE FACILITY AND THE TEMPLE</div>
       <h2 class="victory-title">THE ROOMS RELEASE YOU</h2>
       <div class="victory-label">TOTAL COMPLETION TIME</div>
       <div class="lc-time big" id="victory-time">00:00.0</div>
-      <div id="victory-breakdown"></div>
-      <p class="dim small">Space bent. Gravity turned. Perspective lied. You walked out anyway.</p>
+      <div id="victory-breakdown" class="breakdown"></div>
+      <p class="dim small">Space bent. Gravity turned. Stone remembered. You walked out anyway.</p>
       <div class="panel-actions">
         <button class="btn primary" data-action="replay">REPLAY</button>
         <button class="btn" data-action="main-menu">MAIN MENU</button>

@@ -15,7 +15,25 @@
   --panel-border: rgba(120, 190, 255, 0.28);
   --font-display: 'Orbitron', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
   --font-body: 'Rajdhani', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+  --font-temple: 'Cinzel', 'Trajan Pro', 'Palatino Linotype', Georgia, serif;
+  --gold: #f2b84b;
+  --gold-dim: rgba(242, 184, 75, 0.35);
+  --jade: #4fe0a0;
+  --jade-dim: rgba(79, 224, 160, 0.35);
 }
+
+/* Part II: while a temple level is loaded the HUD turns to gold and jade. */
+body.temple {
+  --cyan: var(--gold);
+  --cyan-dim: var(--gold-dim);
+  --violet: var(--jade);
+  --violet-dim: var(--jade-dim);
+  --panel: rgba(20, 13, 6, 0.8);
+  --panel-border: rgba(242, 184, 75, 0.3);
+}
+body.temple #level-name, body.temple #toast, body.temple .panel h2 { font-family: var(--font-temple); letter-spacing: 0.12em; }
+body.temple #objective-panel { background: linear-gradient(90deg, rgba(22, 14, 6, 0.75), rgba(22, 14, 6, 0.2)); }
+body.temple #hint-text { background: rgba(10, 26, 18, 0.78); }
 
 * { box-sizing: border-box; }
 
@@ -220,6 +238,58 @@ pre {
 }
 #gravity-indicator .g-arrow { display: inline-block; margin-right: 6px; transition: transform 0.4s; }
 
+#relic-tray { margin-top: 12px; }
+.relic-label {
+  font-family: var(--font-temple);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  color: var(--gold);
+  margin-bottom: 5px;
+}
+.relic-slots { display: flex; gap: 6px; justify-content: flex-end; }
+.relic {
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(242, 184, 75, 0.25);
+  background: rgba(20, 12, 4, 0.55);
+  transform: rotate(45deg);
+  transition: all 0.3s ease;
+}
+.relic img { width: 30px; height: 30px; transform: rotate(-45deg); opacity: 0.35; }
+.relic.found { border-color: var(--rc); box-shadow: 0 0 10px var(--rc), inset 0 0 8px rgba(255, 255, 255, 0.08); animation: relicin 0.6s ease; }
+.relic.found img { opacity: 1; }
+.relic.placed { border-color: var(--gold); background: rgba(242, 184, 75, 0.22); }
+.relic.placed img { opacity: 0.85; }
+@keyframes relicin { 0% { transform: rotate(45deg) scale(1.6); } 100% { transform: rotate(45deg) scale(1); } }
+
+#chapter-card {
+  position: absolute;
+  left: 50%;
+  top: 34%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  opacity: 0;
+  pointer-events: none;
+  white-space: nowrap;
+}
+#chapter-card.show { animation: chaptercard 6.5s ease forwards; }
+@keyframes chaptercard { 0% { opacity: 0; letter-spacing: 0.5em; } 18% { opacity: 1; } 75% { opacity: 1; } 100% { opacity: 0; letter-spacing: 0.2em; } }
+.cc-kicker { font-family: var(--font-temple); font-size: 0.95rem; letter-spacing: 0.6em; color: var(--jade); }
+.cc-title {
+  font-family: var(--font-temple);
+  font-weight: 900;
+  font-size: clamp(2rem, 5.5vw, 4.2rem);
+  letter-spacing: 0.14em;
+  color: #fff4dc;
+  text-shadow: 0 0 30px rgba(242, 184, 75, 0.7), 0 2px 0 rgba(0, 0, 0, 0.6);
+  margin: 6px 0 8px;
+}
+.cc-sub { font-size: 1.15rem; letter-spacing: 0.18em; color: rgba(255, 240, 210, 0.75); font-style: italic; }
+
 #hint-panel {
   position: absolute;
   left: 22px;
@@ -290,7 +360,7 @@ pre {
 }
 @keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
 
-#menu-pause, #menu-levels, #menu-settings, #menu-credits, #controls-overlay, #level-complete, #victory, #click-resume {
+#menu-pause, #menu-levels, #menu-settings, #menu-credits, #controls-overlay, #level-complete, #chapter-complete, #victory, #click-resume {
   background: radial-gradient(ellipse at center, rgba(4, 6, 14, 0.55), rgba(2, 3, 8, 0.85));
   backdrop-filter: blur(4px);
 }
@@ -430,6 +500,19 @@ pre {
 .level-card.done .lv-meta { color: var(--green); }
 .level-card.locked { cursor: not-allowed; opacity: 0.35; filter: grayscale(1); }
 .level-card.locked:hover { transform: none; box-shadow: none; border-color: var(--panel-border); }
+.level-card.temple { background: linear-gradient(160deg, rgba(242, 184, 75, 0.1), rgba(79, 224, 160, 0.05)); border-color: rgba(242, 184, 75, 0.28); }
+.level-card.temple .lv-num { color: var(--gold); }
+.level-card.temple .lv-name { font-family: var(--font-temple); font-weight: 700; letter-spacing: 0.1em; font-size: 0.8rem; }
+.level-card.temple:hover { border-color: var(--gold); box-shadow: 0 0 20px var(--gold-dim); }
+.part-head {
+  grid-column: 1 / -1;
+  font-family: var(--font-display);
+  font-size: 0.72rem;
+  letter-spacing: 0.32em;
+  color: var(--cyan);
+  margin: 4px 0 -4px;
+}
+.part-head.temple { font-family: var(--font-temple); font-weight: 700; color: var(--gold); margin-top: 10px; }
 
 /* ---------------- Settings ---------------- */
 .settings-grid { display: grid; gap: 12px; }
@@ -490,8 +573,12 @@ input[type='checkbox'] { accent-color: var(--cyan); width: 20px; height: 20px; }
 .lc-best { color: var(--ink-dim); }
 .victory-title { font-size: 1.6rem !important; color: #fff !important; }
 .victory-label { font-family: var(--font-display); font-size: 0.7rem; letter-spacing: 0.3em; color: var(--ink-dim); }
-#victory-breakdown { display: grid; grid-template-columns: 1fr auto; gap: 4px 20px; margin: 14px auto 10px; max-width: 360px; text-align: left; font-size: 1.05rem; }
-#victory-breakdown span:nth-child(even) { font-family: var(--font-display); font-size: 0.85rem; color: var(--cyan); text-align: right; }
+.breakdown { display: grid; grid-template-columns: 1fr auto; gap: 3px 20px; margin: 14px auto 10px; max-width: 380px; text-align: left; font-size: 1rem; }
+.breakdown span:nth-child(even) { font-family: var(--font-display); font-size: 0.82rem; color: var(--cyan); text-align: right; }
+.breakdown span.part { font-family: var(--font-display); font-size: 0.66rem; letter-spacing: 0.22em; color: var(--ink-dim); margin-top: 8px; border-bottom: 1px solid var(--panel-border); padding-bottom: 2px; }
+.breakdown span.part:nth-child(even) { color: var(--ink); }
+.chapter-teaser { max-width: 440px; margin: 0 auto 16px; line-height: 1.45; color: rgba(255, 236, 200, 0.85); font-size: 1.05rem; font-style: italic; }
+#chapter-complete .lc-kicker { color: var(--gold); }
 
 /* ---------------- Loading ---------------- */
 #loading { background: #04060b; z-index: 50; flex-direction: column; }
@@ -656,6 +743,9 @@ body.touch #hint-panel { left: calc(200px + env(safe-area-inset-left)); bottom: 
   .controls-grid { font-size: 0.95rem; gap: 6px 14px; }
   .lc-time { font-size: 1.5rem; }
   .lc-time.big { font-size: 2.2rem; }
+  .relic { width: 30px; height: 30px; }
+  .relic img { width: 24px; height: 24px; }
+  .cc-sub { font-size: 0.9rem; }
 }
 @media (max-height: 520px) {
   .menu-inner { gap: 14px; }
@@ -673,7 +763,11 @@ body.touch #hint-panel { left: calc(200px + env(safe-area-inset-left)); bottom: 
   .settings-grid { gap: 6px; }
   .settings-grid label { font-size: 0.92rem; }
   .credits p { font-size: 0.92rem; margin-bottom: 8px; }
-  #victory-breakdown { font-size: 0.85rem; margin: 6px auto; }
+  .breakdown { font-size: 0.8rem; margin: 6px auto; gap: 1px 14px; }
+  .chapter-teaser { font-size: 0.85rem; margin-bottom: 8px; }
+  .relic { width: 28px; height: 28px; }
+  .relic img { width: 22px; height: 22px; }
+  .relic-label { font-size: 0.6rem; }
   .panel-actions { margin-top: 12px; }
 }
 body.touch .panel, body.touch .screen { touch-action: pan-y; }
