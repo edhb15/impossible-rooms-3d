@@ -67,7 +67,8 @@ function gravityName(up) { return GRAVITY_NAMES[`${Math.round(up.x)},${Math.roun
    Persistent save data (localStorage)
    --------------------------------------------------------------------- */
 const SAVE_KEY = 'impossibleRooms.save.v1';
-const LEVEL_COUNT = 5;
+const LEVEL_COUNT = 10;
+const PART_ONE_COUNT = 5; // levels 1–5: the facility · levels 6–10: the sunken temple
 const DEFAULT_SETTINGS = {
   master: 0.8, music: 0.55, sfx: 0.85, muted: false,
   sensitivity: 1.0, invertY: false, fov: 75,
@@ -103,6 +104,8 @@ class SaveData {
         lastTimes: f.lastTimes.map((_, i) => (d.lastTimes && typeof d.lastTimes[i] === 'number' ? d.lastTimes[i] : null)),
         settings: { ...DEFAULT_SETTINGS, ...(d.settings || {}) },
       };
+      // Saves from before Part II existed stopped unlocking at level 5.
+      if (this.data.completed[PART_ONE_COUNT - 1]) this.data.unlocked = Math.max(this.data.unlocked, PART_ONE_COUNT + 1);
     } catch (e) {
       console.warn('Save data could not be read; starting fresh.', e);
     }
@@ -138,6 +141,7 @@ class AudioEngine {
     this.ambientNodes = [];
     this.padTimer = 0;
     this.profile = null;
+    this.fxTimers = {};
   }
   init() {
     if (this.ctx) {
@@ -346,14 +350,15 @@ class AudioEngine {
     bus.gain.linearRampToValueAtTime(1, t + 2.5);
     bus.connect(this.sfx);
     this.ambientNodes.push({ gain: bus });
-    // Electrical hum: two detuned saws through a low-pass filter.
+    // Electrical hum (or, in the temple, a deep earth drone): detuned
+    // oscillators through a low-pass filter.
     const lp = c.createBiquadFilter();
     lp.type = 'lowpass'; lp.frequency.value = p.humCutoff; lp.Q.value = 2;
     const hg = c.createGain(); hg.gain.value = p.humVol;
     lp.connect(hg); hg.connect(bus);
-    for (const det of [0, 0.7, -0.4]) {
+    for (const det of p.humVol > 0 ? [0, 0.7, -0.4] : []) {
       const o = c.createOscillator();
-      o.type = 'sawtooth';
+      o.type = p.humType || 'sawtooth';
       o.frequency.value = p.hum + det;
       o.connect(lp); o.start();
       this.ambientNodes.push({ src: o });
@@ -371,18 +376,141 @@ class AudioEngine {
     ns.start(); lfo.start();
     this.ambientNodes.push({ src: ns }, { src: lfo });
     this.padTimer = 1.5;
+    this.fxTimers = {};
   }
   // Generative ambient music: sparse, soft notes from the level's scale.
   update(dt) {
     if (!this.ready || !this.profile) return;
+    const p = this.profile;
     this.padTimer -= dt;
     if (this.padTimer <= 0) {
-      const p = this.profile;
       this.padTimer = rand(p.padGap[0], p.padGap[1]);
       const f = p.scale[Math.floor(Math.random() * p.scale.length)];
-      this.tone({ type: 'sine', f, dur: rand(3.5, 6), vol: 0.035, attack: 1.4, rev: 0.9, dest: this.music });
-      if (Math.random() < 0.5) this.tone({ type: 'triangle', f: f * 1.5, dur: 4, vol: 0.015, attack: 1.8, delay: 0.4, rev: 0.9, dest: this.music });
+      if (p.voice === 'flute') this.flute(f);
+      else {
+        this.tone({ type: 'sine', f, dur: rand(3.5, 6), vol: 0.035, attack: 1.4, rev: 0.9, dest: this.music });
+        if (Math.random() < 0.5) this.tone({ type: 'triangle', f: f * 1.5, dur: 4, vol: 0.015, attack: 1.8, delay: 0.4, rev: 0.9, dest: this.music });
+      }
     }
+    // Environmental one-shots: insects, frogs, birds, water drips, distant drums.
+    if (p.extras) {
+      for (const k of p.extras) {
+        this.fxTimers[k] = (this.fxTimers[k] ?? rand(0.5, 4)) - dt;
+        if (this.fxTimers[k] <= 0) this.fxTimers[k] = this.ambientFx(k);
+      }
+    }
+  }
+  // A breathy clay-flute phrase for the temple levels.
+  flute(f) {
+    const d = rand(2.2, 3.6);
+    this.tone({ type: 'triangle', f, dur: d, vol: 0.028, attack: 0.3, rev: 0.85, dest: this.music, detune: rand(-6, 6) });
+    this.tone({ type: 'sine', f: f * 2, dur: d * 0.7, vol: 0.006, attack: 0.35, rev: 0.9, dest: this.music });
+    this.noise({ dur: 0.4, vol: 0.006, type: 'bandpass', f: f * 3, q: 4, attack: 0.12, rev: 0.6, dest: this.music });
+    if (Math.random() < 0.5) {
+      const g = this.profile.scale;
+      const f2 = g[Math.floor(Math.random() * g.length)];
+      this.tone({ type: 'triangle', f: f2, dur: 2.4, vol: 0.02, attack: 0.25, delay: rand(0.6, 1.2), rev: 0.85, dest: this.music });
+    }
+  }
+  // Plays one environmental sound and returns the seconds until the next.
+  ambientFx(kind) {
+    switch (kind) {
+      case 'insects': {
+        const n = 3 + Math.floor(Math.random() * 6), f = rand(3800, 5400), gap = rand(0.045, 0.08);
+        for (let i = 0; i < n; i++) this.tone({ type: 'sine', f, f2: f * 0.97, dur: 0.035, vol: 0.009, delay: i * gap, rev: 0.25 });
+        return rand(0.3, 2.2);
+      }
+      case 'frogs': {
+        const f = rand(90, 170), n = 2 + Math.floor(Math.random() * 3);
+        for (let i = 0; i < n; i++) this.tone({ type: 'sawtooth', f, f2: f * 0.8, dur: 0.09, vol: 0.022, lp: 700, delay: i * 0.17, rev: 0.3 });
+        return rand(2.5, 7);
+      }
+      case 'birds': {
+        const f = rand(1300, 2300);
+        this.tone({ type: 'sine', f, f2: f * 0.6, dur: 0.35, vol: 0.016, rev: 0.6 });
+        this.tone({ type: 'sine', f: f * 0.6, f2: f * 0.95, dur: 0.25, vol: 0.013, delay: 0.42, rev: 0.6 });
+        return rand(7, 15);
+      }
+      case 'drips': {
+        const f = rand(1100, 1900);
+        this.tone({ type: 'sine', f, f2: f * 0.55, dur: 0.09, vol: 0.03, rev: 0.95 });
+        return rand(1.2, 4.5);
+      }
+      case 'drums': {
+        const n = 2 + (Math.random() < 0.5 ? 1 : 0);
+        for (let i = 0; i < n; i++) {
+          this.tone({ type: 'sine', f: 84, f2: 46, dur: 0.6, vol: 0.08, delay: i * 0.42, rev: 0.6, dest: this.music });
+          this.noise({ dur: 0.08, vol: 0.03, type: 'lowpass', f: 400, delay: i * 0.42, rev: 0.4, dest: this.music });
+        }
+        return rand(9, 18);
+      }
+      case 'creaks': {
+        this.noise({ dur: 1.4, vol: 0.03, type: 'bandpass', f: rand(120, 260), f2: rand(80, 140), q: 6, attack: 0.4, rev: 0.7 });
+        return rand(10, 22);
+      }
+      default: return 999;
+    }
+  }
+  // ---- temple sound effects -----------------------------------------
+  stoneGrind(dur = 0.6, vol = 1) {
+    this.noise({ dur, vol: 0.12 * vol, type: 'lowpass', f: 420, f2: 180, q: 1.4, attack: 0.05, rev: 0.3 });
+    this.noise({ dur, vol: 0.05 * vol, type: 'bandpass', f: 900, f2: 500, q: 3, attack: 0.04, rev: 0.2 });
+    this.tone({ type: 'sawtooth', f: 46, f2: 40, dur, vol: 0.05 * vol, lp: 220, attack: 0.05, curve: 'lin', rev: 0.2 });
+  }
+  stoneDoor(open, dur = 1.6) {
+    this.stoneGrind(dur, 1.3);
+    this.tone({ type: 'sine', f: 62, f2: 34, dur: 0.5, vol: 0.22, delay: dur - 0.1, rev: 0.5 });
+    this.noise({ dur: 0.4, vol: 0.08, type: 'lowpass', f: 500, delay: dur - 0.1, rev: 0.4 });
+  }
+  thump(vol = 1) {
+    this.tone({ type: 'sine', f: 80, f2: 38, dur: 0.35, vol: 0.18 * vol, rev: 0.4 });
+    this.noise({ dur: 0.2, vol: 0.07 * vol, type: 'lowpass', f: 600, rev: 0.3 });
+  }
+  relic() {
+    // A marimba-like arpeggio with a shimmering tail.
+    [523.25, 659.25, 783.99, 1046.5, 1318.5].forEach((f, i) => {
+      this.tone({ type: 'sine', f, dur: 0.5, vol: 0.09, delay: i * 0.08, rev: 0.6 });
+      this.tone({ type: 'triangle', f: f * 4, dur: 0.08, vol: 0.02, delay: i * 0.08, rev: 0.3 });
+    });
+    this.tone({ type: 'sine', f: 1568, dur: 1.6, vol: 0.03, attack: 0.3, delay: 0.4, rev: 0.9, dest: this.music });
+  }
+  offering() {
+    this.thump(0.8);
+    [392, 587.33, 783.99].forEach((f, i) => this.tone({ type: 'triangle', f, dur: 1.2, vol: 0.06, delay: 0.15 + i * 0.12, rev: 0.8, dest: this.music }));
+  }
+  trapClick(vol = 1) {
+    this.tone({ type: 'square', f: 1900, f2: 900, dur: 0.03, vol: 0.05 * vol, lp: 3000, rev: 0.1 });
+    this.noise({ dur: 0.05, vol: 0.06 * vol, type: 'highpass', f: 2500, rev: 0.1 });
+  }
+  dart(vol = 1) {
+    this.noise({ dur: 0.18, vol: 0.12 * vol, type: 'bandpass', f: 2400, f2: 700, q: 2, rev: 0.15 });
+    this.trapClick(vol);
+  }
+  spikes(vol = 1) {
+    this.noise({ dur: 0.16, vol: 0.14 * vol, type: 'highpass', f: 1800, rev: 0.2 });
+    this.tone({ type: 'square', f: 520, f2: 260, dur: 0.12, vol: 0.05 * vol, lp: 2200, rev: 0.2 });
+    this.tone({ type: 'sine', f: 120, f2: 60, dur: 0.15, vol: 0.1 * vol, rev: 0.2 });
+  }
+  whoosh(vol = 1) {
+    this.noise({ dur: 0.45, vol: 0.12 * vol, type: 'bandpass', f: 300, f2: 1400, q: 1.6, attack: 0.15, rev: 0.2 });
+  }
+  fire(vol = 1) {
+    this.noise({ dur: 1.1, vol: 0.16 * vol, type: 'lowpass', f: 1200, f2: 380, q: 0.8, attack: 0.06, rev: 0.3 });
+    this.noise({ dur: 0.6, vol: 0.05 * vol, type: 'highpass', f: 2600, attack: 0.05, rev: 0.2 });
+  }
+  crumble(vol = 1) {
+    this.noise({ dur: 0.6, vol: 0.12 * vol, type: 'lowpass', f: 700, f2: 200, attack: 0.02, rev: 0.4 });
+    for (let i = 0; i < 4; i++) this.tone({ type: 'sine', f: rand(90, 160), f2: 50, dur: 0.12, vol: 0.06 * vol, delay: 0.05 + i * rand(0.06, 0.12), rev: 0.3 });
+  }
+  death() {
+    this.tone({ type: 'sine', f: 140, f2: 36, dur: 0.8, vol: 0.32, rev: 0.5 });
+    this.tone({ type: 'sawtooth', f: 98, f2: 70, dur: 0.9, vol: 0.06, lp: 500, rev: 0.6 });
+    this.noise({ dur: 0.45, vol: 0.16, type: 'lowpass', f: 900, rev: 0.4 });
+  }
+  awaken() {
+    // The temple wakes: a rising chord with drums.
+    [146.83, 220, 293.66, 369.99, 440].forEach((f, i) => this.tone({ type: 'triangle', f, dur: 4, vol: 0.035, attack: 1.2, delay: i * 0.25, rev: 0.9, dest: this.music }));
+    for (let i = 0; i < 6; i++) this.tone({ type: 'sine', f: 82, f2: 44, dur: 0.6, vol: 0.12, delay: i * 0.36, rev: 0.6, dest: this.music });
   }
 }
 
@@ -393,6 +521,12 @@ const AMBIENT_PROFILES = {
   portal: { hum: 60, humCutoff: 200, humVol: 0.045, airFreq: 900, airVol: 0.018, scale: [293.66, 349.23, 440, 523.25, 587.33, 698.46], padGap: [3, 6] },
   void: { hum: 36, humCutoff: 110, humVol: 0.06, airFreq: 180, airVol: 0.04, scale: [146.83, 174.61, 220, 261.63, 329.63, 392], padGap: [3, 6] },
   menu: { hum: 45, humCutoff: 120, humVol: 0.035, airFreq: 260, airVol: 0.02, scale: [220, 261.63, 329.63, 392, 493.88], padGap: [3, 6] },
+  // Part II: no machinery — wind, insects, dripping water, clay flutes and drums.
+  jungle: { hum: 0, humCutoff: 100, humVol: 0, airFreq: 900, airVol: 0.03, scale: [293.66, 349.23, 392, 440, 523.25, 587.33], padGap: [4, 8], voice: 'flute', extras: ['insects', 'frogs', 'birds', 'drums'] },
+  temple: { hum: 41, humType: 'sine', humCutoff: 90, humVol: 0.06, airFreq: 260, airVol: 0.03, scale: [220, 261.63, 293.66, 329.63, 392, 440], padGap: [4, 8], voice: 'flute', extras: ['drips', 'drums', 'creaks'] },
+  sunlit: { hum: 49, humType: 'sine', humCutoff: 90, humVol: 0.04, airFreq: 600, airVol: 0.025, scale: [329.63, 392, 440, 493.88, 587.33, 659.25], padGap: [3, 7], voice: 'flute', extras: ['drips', 'birds'] },
+  tomb: { hum: 33, humType: 'sine', humCutoff: 80, humVol: 0.08, airFreq: 180, airVol: 0.035, scale: [196, 233.08, 261.63, 293.66, 349.23], padGap: [5, 9], voice: 'flute', extras: ['drips', 'creaks', 'drums'] },
+  sanctum: { hum: 36, humType: 'sine', humCutoff: 90, humVol: 0.06, airFreq: 300, airVol: 0.03, scale: [261.63, 293.66, 329.63, 392, 440, 523.25], padGap: [3, 6], voice: 'flute', extras: ['drips', 'drums'] },
 };
 
 /* ---------------------------------------------------------------------
@@ -400,6 +534,235 @@ const AMBIENT_PROFILES = {
    --------------------------------------------------------------------- */
 const FONT_DISPLAY = "'Orbitron', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif";
 const FONT_BODY = "'Rajdhani', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif";
+
+/* ---------------------------------------------------------------------
+   Maya glyph painters (2D canvas), used by the temple textures, murals,
+   dials and the offering icons in the HUD.
+   --------------------------------------------------------------------- */
+const FONT_TEMPLE = "'Cinzel', 'Trajan Pro', 'Palatino Linotype', Georgia, serif";
+
+function pathRoundRect(x, x0, y0, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  x.beginPath();
+  x.moveTo(x0 + r, y0);
+  x.arcTo(x0 + w, y0, x0 + w, y0 + h, r);
+  x.arcTo(x0 + w, y0 + h, x0, y0 + h, r);
+  x.arcTo(x0, y0 + h, x0, y0, r);
+  x.arcTo(x0, y0, x0 + w, y0, r);
+  x.closePath();
+}
+
+// Paints one symbol centred on (cx, cy) in a box of size s, in a single colour.
+// kind: 'num:N' (a bar-and-dot numeral, 0–19), a day-sign glyph
+// (sun, moon, jaguar, serpent, ajaw, skull, tree, plus) or an offering
+// silhouette (mask, disc, blade, feather, idol, gem, heart).
+// Holes are punched with destination-out, so paint onto a transparent canvas.
+function paintSymbol(x, kind, cx, cy, s, color) {
+  x.save();
+  x.fillStyle = color;
+  x.strokeStyle = color;
+  x.lineCap = 'round';
+  x.lineJoin = 'round';
+  const lw = (k) => { x.lineWidth = s * k; };
+  const hole = (fn) => { x.save(); x.globalCompositeOperation = 'destination-out'; fn(); x.restore(); };
+  const circle = (px, py, r, fill = true) => { x.beginPath(); x.arc(cx + px * s, cy + py * s, r * s, 0, TAU); if (fill) x.fill(); else x.stroke(); };
+  const ellipse = (px, py, rx, ry, rot = 0, fill = true) => { x.beginPath(); x.ellipse(cx + px * s, cy + py * s, rx * s, ry * s, rot, 0, TAU); if (fill) x.fill(); else x.stroke(); };
+  if (kind.startsWith('num:')) {
+    const n = Number(kind.slice(4));
+    if (n === 0) {
+      // Zero is a shell.
+      lw(0.055);
+      ellipse(0, 0.02, 0.36, 0.22, 0, false);
+      x.beginPath(); x.moveTo(cx - s * 0.3, cy + s * 0.02); x.quadraticCurveTo(cx, cy - s * 0.16, cx + s * 0.3, cy + s * 0.02); x.stroke();
+      for (const k of [-0.15, 0, 0.15]) circle(k, 0.1, 0.035);
+    } else {
+      const bars = Math.floor(n / 5), dots = n % 5;
+      const bw = s * 0.74, bh = s * 0.12, gap = s * 0.06, dr = s * 0.072;
+      const total = bars * bh + (dots ? dr * 2 : 0) + Math.max(0, bars + (dots ? 1 : 0) - 1) * gap;
+      let y = cy + total / 2;
+      for (let i = 0; i < bars; i++) {
+        pathRoundRect(x, cx - bw / 2, y - bh, bw, bh, bh * 0.4); x.fill();
+        hole(() => { x.lineWidth = s * 0.012; x.beginPath(); x.moveTo(cx - bw * 0.36, y - bh / 2); x.lineTo(cx + bw * 0.36, y - bh / 2); x.stroke(); });
+        y -= bh + gap;
+      }
+      if (dots) {
+        const sp = s * 0.19;
+        for (let i = 0; i < dots; i++) { x.beginPath(); x.arc(cx + (i - (dots - 1) / 2) * sp, y - dr, dr, 0, TAU); x.fill(); }
+      }
+    }
+    x.restore();
+    return;
+  }
+  switch (kind) {
+    case 'sun': { // K'in: a four-petalled flower in a ring
+      lw(0.05); circle(0, 0, 0.38, false);
+      for (let k = 0; k < 4; k++) {
+        const a = k * Math.PI / 2;
+        ellipse(Math.sin(a) * 0.16, -Math.cos(a) * 0.16, 0.075, 0.13, a, true);
+        circle(Math.sin(a + Math.PI / 4) * 0.29, -Math.cos(a + Math.PI / 4) * 0.29, 0.03);
+      }
+      circle(0, 0, 0.06);
+      break;
+    }
+    case 'moon': {
+      x.beginPath(); x.arc(cx, cy, s * 0.36, 0, TAU); x.fill();
+      hole(() => { x.beginPath(); x.arc(cx + s * 0.16, cy - s * 0.08, s * 0.31, 0, TAU); x.fill(); });
+      hole(() => { for (const [px, py] of [[-0.2, 0.05], [-0.12, 0.22], [-0.25, -0.13]]) { x.beginPath(); x.arc(cx + px * s, cy + py * s, s * 0.035, 0, TAU); x.fill(); } });
+      break;
+    }
+    case 'jaguar': {
+      lw(0.05);
+      ellipse(0, 0.05, 0.31, 0.27, 0, false);
+      circle(-0.22, -0.2, 0.08, false); circle(0.22, -0.2, 0.08, false);
+      ellipse(-0.11, -0.01, 0.065, 0.045); ellipse(0.11, -0.01, 0.065, 0.045);
+      x.beginPath(); x.moveTo(cx - s * 0.06, cy + s * 0.09); x.lineTo(cx + s * 0.06, cy + s * 0.09); x.lineTo(cx, cy + s * 0.15); x.closePath(); x.fill();
+      x.beginPath(); x.arc(cx - s * 0.06, cy + s * 0.19, s * 0.06, 0, Math.PI); x.stroke();
+      x.beginPath(); x.arc(cx + s * 0.06, cy + s * 0.19, s * 0.06, 0, Math.PI); x.stroke();
+      lw(0.025);
+      for (const [px, py] of [[-0.2, 0.17], [0.2, 0.17], [0, -0.14], [-0.24, 0.02], [0.24, 0.02]]) circle(px, py, 0.03, false);
+      break;
+    }
+    case 'serpent': {
+      lw(0.09);
+      x.beginPath(); x.moveTo(cx - s * 0.32, cy + s * 0.32);
+      x.bezierCurveTo(cx + s * 0.38, cy + s * 0.28, cx - s * 0.38, cy - s * 0.05, cx + s * 0.1, cy - s * 0.2);
+      x.stroke();
+      circle(0.18, -0.24, 0.12);
+      hole(() => { x.beginPath(); x.arc(cx + s * 0.21, cy - s * 0.27, s * 0.035, 0, TAU); x.fill(); });
+      lw(0.025);
+      x.beginPath(); x.moveTo(cx + s * 0.28, cy - s * 0.2); x.lineTo(cx + s * 0.42, cy - s * 0.14); x.lineTo(cx + s * 0.45, cy - s * 0.2);
+      x.moveTo(cx + s * 0.42, cy - s * 0.14); x.lineTo(cx + s * 0.44, cy - s * 0.07); x.stroke();
+      for (let i = 0; i < 3; i++) { x.beginPath(); x.moveTo(cx - s * (0.36 + i * 0.03), cy + s * (0.24 + i * 0.05)); x.lineTo(cx - s * (0.26 + i * 0.03), cy + s * (0.36 + i * 0.05)); x.stroke(); }
+      break;
+    }
+    case 'ajaw': { // a lord's face
+      ellipse(0, 0, 0.3, 0.36);
+      hole(() => {
+        for (const px of [-0.12, 0.12]) { x.beginPath(); x.arc(cx + px * s, cy - s * 0.08, s * 0.06, 0, TAU); x.fill(); }
+        x.beginPath(); x.arc(cx, cy + s * 0.16, s * 0.08, 0, TAU); x.fill();
+      });
+      break;
+    }
+    case 'skull': {
+      ellipse(0, -0.06, 0.3, 0.27);
+      x.fillRect(cx - s * 0.17, cy + s * 0.08, s * 0.34, s * 0.2);
+      hole(() => {
+        for (const px of [-0.12, 0.12]) { x.beginPath(); x.ellipse(cx + px * s, cy - s * 0.04, s * 0.08, s * 0.07, 0, 0, TAU); x.fill(); }
+        x.beginPath(); x.moveTo(cx, cy + s * 0.04); x.lineTo(cx - s * 0.04, cy + s * 0.11); x.lineTo(cx + s * 0.04, cy + s * 0.11); x.fill();
+        for (let i = -1; i <= 1; i++) x.fillRect(cx + i * s * 0.08 - s * 0.012, cy + s * 0.18, s * 0.024, s * 0.1);
+      });
+      break;
+    }
+    case 'tree': { // the world tree, a cross
+      lw(0.09);
+      x.beginPath(); x.moveTo(cx, cy + s * 0.4); x.lineTo(cx, cy - s * 0.38); x.moveTo(cx - s * 0.3, cy - s * 0.12); x.lineTo(cx + s * 0.3, cy - s * 0.12); x.stroke();
+      circle(-0.32, -0.12, 0.07); circle(0.32, -0.12, 0.07); circle(0, -0.4, 0.07);
+      lw(0.04);
+      x.beginPath(); x.moveTo(cx - s * 0.2, cy + s * 0.4); x.quadraticCurveTo(cx, cy + s * 0.22, cx + s * 0.2, cy + s * 0.4); x.stroke();
+      break;
+    }
+    case 'plus': {
+      lw(0.1);
+      x.beginPath(); x.moveTo(cx - s * 0.26, cy); x.lineTo(cx + s * 0.26, cy); x.moveTo(cx, cy - s * 0.26); x.lineTo(cx, cy + s * 0.26); x.stroke();
+      break;
+    }
+    case 'mask': {
+      ellipse(0, 0, 0.28, 0.36);
+      lw(0.045); circle(-0.36, 0.02, 0.07, false); circle(0.36, 0.02, 0.07, false);
+      hole(() => {
+        for (const px of [-0.12, 0.12]) { x.beginPath(); x.ellipse(cx + px * s, cy - s * 0.06, s * 0.08, s * 0.03, 0, 0, TAU); x.fill(); }
+        x.fillRect(cx - s * 0.1, cy + s * 0.16, s * 0.2, s * 0.05);
+      });
+      break;
+    }
+    case 'disc': {
+      for (let k = 0; k < 8; k++) {
+        const a = (k / 8) * TAU;
+        x.beginPath();
+        x.moveTo(cx + Math.cos(a - 0.17) * s * 0.28, cy + Math.sin(a - 0.17) * s * 0.28);
+        x.lineTo(cx + Math.cos(a) * s * 0.45, cy + Math.sin(a) * s * 0.45);
+        x.lineTo(cx + Math.cos(a + 0.17) * s * 0.28, cy + Math.sin(a + 0.17) * s * 0.28);
+        x.fill();
+      }
+      circle(0, 0, 0.29);
+      hole(() => { x.lineWidth = s * 0.035; x.beginPath(); x.arc(cx, cy, s * 0.18, 0, TAU); x.stroke(); });
+      break;
+    }
+    case 'blade': {
+      x.beginPath(); x.moveTo(cx, cy - s * 0.44);
+      x.quadraticCurveTo(cx + s * 0.16, cy - s * 0.06, cx + s * 0.02, cy + s * 0.16);
+      x.lineTo(cx - s * 0.02, cy + s * 0.16);
+      x.quadraticCurveTo(cx - s * 0.16, cy - s * 0.06, cx, cy - s * 0.44); x.fill();
+      x.fillRect(cx - s * 0.14, cy + s * 0.15, s * 0.28, s * 0.05);
+      x.fillRect(cx - s * 0.04, cy + s * 0.2, s * 0.08, s * 0.22);
+      hole(() => { x.lineWidth = s * 0.02; x.beginPath(); x.moveTo(cx, cy - s * 0.3); x.lineTo(cx, cy + s * 0.08); x.stroke(); });
+      break;
+    }
+    case 'feather': {
+      x.beginPath(); x.moveTo(cx - s * 0.1, cy + s * 0.44);
+      x.quadraticCurveTo(cx + s * 0.32, cy + s * 0.05, cx + s * 0.12, cy - s * 0.44);
+      x.quadraticCurveTo(cx - s * 0.28, cy - s * 0.05, cx - s * 0.1, cy + s * 0.44); x.fill();
+      hole(() => {
+        x.lineWidth = s * 0.025;
+        x.beginPath(); x.moveTo(cx - s * 0.1, cy + s * 0.44); x.quadraticCurveTo(cx + s * 0.04, cy, cx + s * 0.1, cy - s * 0.38); x.stroke();
+        x.lineWidth = s * 0.012;
+        for (let i = 0; i < 6; i++) {
+          const t = 0.15 + i * 0.12, px = cx + s * (-0.08 + t * 0.2), py = cy + s * (0.4 - t * 0.8);
+          x.beginPath(); x.moveTo(px, py); x.lineTo(px - s * 0.13, py - s * 0.05); x.moveTo(px, py); x.lineTo(px + s * 0.13, py - s * 0.08); x.stroke();
+        }
+      });
+      break;
+    }
+    case 'idol': {
+      lw(0.08);
+      for (let i = 0; i < 3; i++) ellipse(0, 0.26 - i * 0.15, 0.27 - i * 0.05, 0.08, 0, false);
+      circle(0.04, -0.25, 0.12);
+      hole(() => { x.beginPath(); x.arc(cx + s * 0.08, cy - s * 0.28, s * 0.03, 0, TAU); x.fill(); });
+      break;
+    }
+    case 'gem': case 'heart': {
+      x.beginPath();
+      x.moveTo(cx, cy - s * 0.4); x.lineTo(cx + s * 0.3, cy - s * 0.12); x.lineTo(cx + s * 0.2, cy + s * 0.32);
+      x.lineTo(cx - s * 0.2, cy + s * 0.32); x.lineTo(cx - s * 0.3, cy - s * 0.12); x.closePath(); x.fill();
+      hole(() => {
+        x.lineWidth = s * 0.025;
+        x.beginPath(); x.moveTo(cx - s * 0.3, cy - s * 0.12); x.lineTo(cx + s * 0.3, cy - s * 0.12);
+        x.moveTo(cx, cy - s * 0.4); x.lineTo(cx - s * 0.1, cy - s * 0.12); x.lineTo(cx, cy + s * 0.32);
+        x.moveTo(cx, cy - s * 0.4); x.lineTo(cx + s * 0.1, cy - s * 0.12); x.lineTo(cx, cy + s * 0.32); x.stroke();
+      });
+      if (kind === 'heart') { lw(0.035); circle(0, -0.02, 0.44, false); }
+      break;
+    }
+    default: break;
+  }
+  x.restore();
+}
+
+// A day-sign cartouche: a rounded frame on three little feet.
+function paintCartouche(x, cx, cy, s, color) {
+  x.save();
+  x.strokeStyle = color; x.fillStyle = color;
+  x.lineWidth = s * 0.045;
+  pathRoundRect(x, cx - s * 0.44, cy - s * 0.44, s * 0.88, s * 0.8, s * 0.16);
+  x.stroke();
+  for (const k of [-0.24, 0, 0.24]) x.fillRect(cx + k * s - s * 0.07, cy + s * 0.37, s * 0.14, s * 0.08);
+  x.restore();
+}
+
+// The Maya step-fret ("xicalcoliuhqui") band used to border murals.
+function paintStepFret(x, x0, y0, w, h, color) {
+  x.save();
+  x.strokeStyle = color; x.lineWidth = h * 0.12; x.lineJoin = 'miter';
+  const u = h;
+  for (let px = x0; px < x0 + w; px += u * 1.6) {
+    x.beginPath();
+    x.moveTo(px, y0 + h * 0.9);
+    x.lineTo(px, y0 + h * 0.5); x.lineTo(px + u * 0.4, y0 + h * 0.5); x.lineTo(px + u * 0.4, y0 + h * 0.15);
+    x.lineTo(px + u * 0.9, y0 + h * 0.15); x.lineTo(px + u * 0.9, y0 + h * 0.62); x.lineTo(px + u * 0.62, y0 + h * 0.62);
+    x.stroke();
+  }
+  x.restore();
+}
 
 class TextureFactory {
   constructor(renderer) {
@@ -645,13 +1008,433 @@ class TextureFactory {
       return this.finish(c, { repeat: false, srgb: true });
     });
   }
-  // One-off text texture for signs and screens (not cached).
-  text(lines, { w = 512, h = 256, bg = 'rgba(6,10,18,0.92)', color = '#4fd8ff', font = FONT_DISPLAY, size = 48, weight = 700, border = true, align = 'center', glow = true } = {}) {
+  /* ---- Part II: temple textures -------------------------------------- */
+  // Dressed limestone courses with weathering. Returns { map, bump, canvas }.
+  stone(key = 'limestone', { base = [186, 172, 144], mortar = '#3e3628', rows = 8, moss = 0, seed = 31, streaks = 0.5 } = {}) {
+    return this.cached('stone:' + key, () => {
+      const S = 512, c = this.canvas(S), x = c.getContext('2d');
+      const B = 256, b = this.canvas(B), bx = b.getContext('2d');
+      const rnd = mulberry32(seed);
+      x.fillStyle = mortar; x.fillRect(0, 0, S, S);
+      bx.fillStyle = '#1e1e1e'; bx.fillRect(0, 0, B, B);
+      const rh = S / rows;
+      for (let r = 0; r < rows; r++) {
+        const n = 2 + Math.floor(rnd() * 3);
+        const ws = Array.from({ length: n }, () => 0.6 + rnd());
+        const sum = ws.reduce((a, v) => a + v, 0);
+        let px = rnd() * S;
+        for (const wv of ws) {
+          const w = (wv / sum) * S;
+          const k = (rnd() - 0.5) * 30, warm = (rnd() - 0.5) * 12;
+          const col = `rgb(${base[0] + k + warm | 0},${base[1] + k | 0},${base[2] + k - warm | 0})`;
+          const hb = 200 + (rnd() - 0.5) * 50;
+          for (const ox of [0, -S]) {
+            const X0 = px + ox;
+            if (X0 + w < 0 || X0 > S) continue;
+            const y0 = r * rh;
+            x.fillStyle = col;
+            pathRoundRect(x, X0 + 2.5, y0 + 2.5, w - 5, rh - 5, 5); x.fill();
+            const g = x.createLinearGradient(0, y0, 0, y0 + rh);
+            g.addColorStop(0, 'rgba(255,240,210,0.14)'); g.addColorStop(0.18, 'rgba(0,0,0,0)');
+            g.addColorStop(0.75, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,0.28)');
+            x.fillStyle = g; x.fillRect(X0 + 2, y0 + 2, w - 4, rh - 4);
+            const g2 = x.createLinearGradient(X0, 0, X0 + w, 0);
+            g2.addColorStop(0, 'rgba(0,0,0,0.16)'); g2.addColorStop(0.06, 'rgba(0,0,0,0)');
+            g2.addColorStop(0.94, 'rgba(0,0,0,0)'); g2.addColorStop(1, 'rgba(0,0,0,0.2)');
+            x.fillStyle = g2; x.fillRect(X0 + 2, y0 + 2, w - 4, rh - 4);
+            bx.fillStyle = `rgb(${hb | 0},${hb | 0},${hb | 0})`;
+            pathRoundRect(bx, (X0 + 2.5) / 2, (y0 + 2.5) / 2, (w - 5) / 2, (rh - 5) / 2, 3); bx.fill();
+          }
+          px = (px + w) % S;
+        }
+      }
+      this.paintNoise(x, S, [8, 32, 128], 0.1, seed + 1);
+      this.paintNoise(bx, B, [16, 64, 128], 0.22, seed + 2);
+      // Chips, pits and water streaks.
+      for (let i = 0; i < 900; i++) {
+        const px = rnd() * S, py = rnd() * S, r = 0.6 + rnd() * 2.2;
+        x.fillStyle = rnd() < 0.6 ? 'rgba(30,24,16,0.35)' : 'rgba(255,245,225,0.18)';
+        x.beginPath(); x.arc(px, py, r, 0, TAU); x.fill();
+        bx.fillStyle = 'rgba(0,0,0,0.5)'; bx.beginPath(); bx.arc(px / 2, py / 2, r / 2, 0, TAU); bx.fill();
+      }
+      for (let i = 0; i < 40 * streaks; i++) {
+        const px = rnd() * S, py = rnd() * S, len = 30 + rnd() * 120;
+        const g = x.createLinearGradient(0, py, 0, py + len);
+        g.addColorStop(0, 'rgba(40,34,24,0.22)'); g.addColorStop(1, 'rgba(40,34,24,0)');
+        x.fillStyle = g; x.fillRect(px, py, 2 + rnd() * 5, len);
+      }
+      if (moss > 0) {
+        for (let i = 0; i < 70 * moss; i++) {
+          const px = rnd() * S, py = rnd() * S, r = 10 + rnd() * 46;
+          const g = x.createRadialGradient(px, py, 0, px, py, r);
+          g.addColorStop(0, `rgba(${60 + rnd() * 30 | 0},${96 + rnd() * 40 | 0},${40 + rnd() * 20 | 0},0.5)`);
+          g.addColorStop(1, 'rgba(60,100,40,0)');
+          x.fillStyle = g;
+          for (const ox of [-S, 0, S]) for (const oy of [-S, 0, S]) { x.beginPath(); x.arc(px + ox, py + oy, r, 0, TAU); x.fill(); }
+        }
+      }
+      return { map: this.finish(c), bump: this.finish(b, { srgb: false }), canvas: c };
+    });
+  }
+  // Floor flagstones.
+  paving(key = 'paving', { base = [160, 150, 128], gap = '#2a241a', seed = 47, moss = 0 } = {}) {
+    return this.cached('pave:' + key, () => {
+      const S = 512, c = this.canvas(S), x = c.getContext('2d');
+      const B = 256, b = this.canvas(B), bx = b.getContext('2d');
+      const rnd = mulberry32(seed);
+      x.fillStyle = gap; x.fillRect(0, 0, S, S);
+      bx.fillStyle = '#101010'; bx.fillRect(0, 0, B, B);
+      const rows = 4, rh = S / rows;
+      for (let r = 0; r < rows; r++) {
+        const n = 2 + Math.floor(rnd() * 2);
+        const ws = Array.from({ length: n }, () => 0.7 + rnd() * 0.8);
+        const sum = ws.reduce((a, v) => a + v, 0);
+        let px = rnd() * S;
+        for (const wv of ws) {
+          const w = (wv / sum) * S;
+          const k = (rnd() - 0.5) * 34;
+          const col = `rgb(${base[0] + k | 0},${base[1] + k | 0},${base[2] + k * 0.8 | 0})`;
+          for (const ox of [0, -S]) {
+            const X0 = px + ox;
+            if (X0 + w < 0 || X0 > S) continue;
+            x.fillStyle = col;
+            pathRoundRect(x, X0 + 4, r * rh + 4, w - 8, rh - 8, 10); x.fill();
+            const g = x.createRadialGradient(X0 + w / 2, r * rh + rh / 2, 10, X0 + w / 2, r * rh + rh / 2, Math.max(w, rh) * 0.7);
+            g.addColorStop(0, 'rgba(255,250,235,0.06)'); g.addColorStop(1, 'rgba(0,0,0,0.25)');
+            x.fillStyle = g; x.fillRect(X0 + 4, r * rh + 4, w - 8, rh - 8);
+            bx.fillStyle = `rgb(${210 + k | 0},${210 + k | 0},${210 + k | 0})`;
+            pathRoundRect(bx, (X0 + 4) / 2, (r * rh + 4) / 2, (w - 8) / 2, (rh - 8) / 2, 5); bx.fill();
+          }
+          px = (px + w) % S;
+        }
+      }
+      this.paintNoise(x, S, [16, 64, 256], 0.12, seed + 3);
+      this.paintNoise(bx, B, [32, 128], 0.2, seed + 4);
+      // Cracks.
+      x.strokeStyle = 'rgba(25,20,12,0.55)'; x.lineWidth = 1.5;
+      bx.strokeStyle = 'rgba(0,0,0,0.8)'; bx.lineWidth = 1;
+      for (let i = 0; i < 14; i++) {
+        let px = rnd() * S, py = rnd() * S;
+        x.beginPath(); x.moveTo(px, py); bx.beginPath(); bx.moveTo(px / 2, py / 2);
+        for (let j = 0; j < 5; j++) { px += (rnd() - 0.5) * 50; py += (rnd() - 0.5) * 50; x.lineTo(px, py); bx.lineTo(px / 2, py / 2); }
+        x.stroke(); bx.stroke();
+      }
+      if (moss > 0) {
+        for (let i = 0; i < 50 * moss; i++) {
+          const px = rnd() * S, py = rnd() * S, r = 8 + rnd() * 30;
+          const g = x.createRadialGradient(px, py, 0, px, py, r);
+          g.addColorStop(0, 'rgba(58,92,38,0.55)'); g.addColorStop(1, 'rgba(58,92,38,0)');
+          x.fillStyle = g; x.beginPath(); x.arc(px, py, r, 0, TAU); x.fill();
+        }
+      }
+      return { map: this.finish(c), bump: this.finish(b, { srgb: false }) };
+    });
+  }
+  // Glyph blocks: a wall of carved cartouches (4 × 4 per tile).
+  carvedWall(key = 'carved', { base = [178, 162, 132], seed = 61 } = {}) {
+    return this.cached('carvedWall:' + key, () => {
+      const S = 512, c = this.canvas(S), x = c.getContext('2d');
+      const B = 256, b = this.canvas(B), bx = b.getContext('2d');
+      const stone = this.stone('limestone').canvas;
+      x.drawImage(stone, 0, 0);
+      x.fillStyle = `rgba(${base[0]},${base[1]},${base[2]},0.35)`; x.fillRect(0, 0, S, S);
+      bx.fillStyle = '#c8c8c8'; bx.fillRect(0, 0, B, B);
+      const rnd = mulberry32(seed);
+      const kinds = ['sun', 'moon', 'jaguar', 'serpent', 'ajaw', 'num:7', 'num:13', 'tree', 'num:4', 'skull', 'num:9', 'feather'];
+      const T = S / 4;
+      for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) {
+        const cx = i * T + T / 2, cy = j * T + T / 2;
+        x.strokeStyle = 'rgba(40,30,18,0.7)'; x.lineWidth = 3;
+        x.strokeRect(i * T + 2, j * T + 2, T - 4, T - 4);
+        bx.strokeStyle = '#303030'; bx.lineWidth = 2; bx.strokeRect(i * T / 2 + 1, j * T / 2 + 1, T / 2 - 2, T / 2 - 2);
+        const kind = kinds[Math.floor(rnd() * kinds.length)];
+        this.carveInto(x, 'cart', cx, cy, T * 0.9);
+        this.carveInto(x, kind, cx, cy - T * 0.03, T * 0.62);
+        bx.drawImage(this.glyphCanvas(kind, '#000', 128), (cx - T * 0.31) / 2, (cy - T * 0.34) / 2, T * 0.31, T * 0.31);
+        bx.globalAlpha = 0.8; bx.drawImage(this.glyphCanvas('cart', '#000', 128), (cx - T * 0.45) / 2, (cy - T * 0.45) / 2, T * 0.45, T * 0.45); bx.globalAlpha = 1;
+      }
+      return { map: this.finish(c), bump: this.finish(b, { srgb: false }) };
+    });
+  }
+  // Painted stucco, flaking to the stone beneath.
+  stucco(key, color = [138, 40, 28], seed = 71) {
+    return this.cached('stucco:' + key, () => {
+      const S = 512, c = this.canvas(S), x = c.getContext('2d');
+      const stone = this.stone('limestone').canvas;
+      x.drawImage(stone, 0, 0);
+      const p = this.canvas(S), px = p.getContext('2d');
+      px.fillStyle = `rgb(${color[0]},${color[1]},${color[2]})`; px.fillRect(0, 0, S, S);
+      this.paintNoise(px, S, [8, 32, 128], 0.12, seed);
+      const rnd = mulberry32(seed + 1);
+      px.globalCompositeOperation = 'destination-out';
+      for (let i = 0; i < 60; i++) {
+        const cx = rnd() * S, cy = rnd() * S, r = 6 + rnd() * 30;
+        px.beginPath();
+        for (let k = 0; k < 9; k++) { const a = (k / 9) * TAU, rr = r * (0.5 + rnd() * 0.7); px.lineTo(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr); }
+        px.fill();
+      }
+      x.drawImage(p, 0, 0);
+      return this.finish(c);
+    });
+  }
+  earth() {
+    return this.cached('earth', () => {
+      const S = 512, c = this.canvas(S), x = c.getContext('2d');
+      x.fillStyle = '#3a3122'; x.fillRect(0, 0, S, S);
+      this.paintNoise(x, S, [8, 32, 128, 256], 0.18, 81);
+      const rnd = mulberry32(82);
+      // Leaf litter, batched into a few colours to keep generation fast.
+      const cols = ['rgba(118,84,28,0.6)', 'rgba(96,70,26,0.6)', 'rgba(54,92,34,0.55)', 'rgba(62,104,40,0.55)'];
+      for (const col of cols) {
+        x.fillStyle = col;
+        x.beginPath();
+        for (let i = 0; i < 175; i++) {
+          const px = rnd() * S, py = rnd() * S, a = rnd() * TAU, l = 4 + rnd() * 9;
+          x.moveTo(px + Math.cos(a) * l, py + Math.sin(a) * l);
+          x.ellipse(px, py, l, l * 0.4, a, 0, TAU);
+        }
+        x.fill();
+      }
+      return this.finish(c);
+    });
+  }
+  bark() {
+    return this.cached('bark', () => {
+      const S = 256, c = this.canvas(S), x = c.getContext('2d');
+      x.fillStyle = '#6f6556'; x.fillRect(0, 0, S, S);
+      const rnd = mulberry32(91);
+      for (let i = 0; i < 160; i++) {
+        const px = rnd() * S, w = 1 + rnd() * 4, v = 60 + rnd() * 80;
+        x.fillStyle = `rgba(${v},${v * 0.9 | 0},${v * 0.75 | 0},0.45)`;
+        x.fillRect(px, 0, w, S);
+      }
+      this.paintNoise(x, S, [16, 64], 0.12, 92);
+      return this.finish(c);
+    });
+  }
+  // Alpha-cut foliage cards: 'broad' (banana/monstera), 'fern', 'canopy', 'vine', 'grass'.
+  leaf(kind) {
+    return this.cached('leaf:' + kind, () => {
+      const W = kind === 'vine' ? 128 : 256, H = kind === 'vine' ? 512 : 256;
+      const c = this.canvas(W, H), x = c.getContext('2d');
+      const rnd = mulberry32(kind.length * 97 + 5);
+      const green = (k = 0) => `rgb(${40 + rnd() * 30 + k | 0},${78 + rnd() * 50 + k | 0},${30 + rnd() * 22 | 0})`;
+      const leafShape = (bx, by, ang, len, wid, col, veins = true) => {
+        x.save(); x.translate(bx, by); x.rotate(ang);
+        const g = x.createLinearGradient(0, 0, 0, -len);
+        g.addColorStop(0, col); g.addColorStop(1, 'rgb(96,150,70)');
+        x.fillStyle = g;
+        x.beginPath(); x.moveTo(0, 0);
+        x.quadraticCurveTo(wid, -len * 0.35, 0, -len);
+        x.quadraticCurveTo(-wid, -len * 0.35, 0, 0); x.fill();
+        if (veins) {
+          x.strokeStyle = 'rgba(190,230,150,0.55)'; x.lineWidth = 1.6;
+          x.beginPath(); x.moveTo(0, 0); x.lineTo(0, -len * 0.96); x.stroke();
+          x.strokeStyle = 'rgba(20,40,14,0.4)'; x.lineWidth = 1;
+          for (let t = 0.15; t < 0.9; t += 0.09) {
+            x.beginPath(); x.moveTo(0, -len * t); x.lineTo(wid * 0.55, -len * (t + 0.07)); x.moveTo(0, -len * t); x.lineTo(-wid * 0.55, -len * (t + 0.07)); x.stroke();
+          }
+        }
+        x.restore();
+      };
+      if (kind === 'broad') {
+        for (let i = 0; i < 6; i++) leafShape(W / 2, H - 4, -1.15 + (i / 5) * 2.3 + (rnd() - 0.5) * 0.2, 150 + rnd() * 80, 38 + rnd() * 22, green());
+      } else if (kind === 'fern') {
+        for (let i = 0; i < 7; i++) {
+          const ang = -1.2 + (i / 6) * 2.4, len = 140 + rnd() * 90;
+          x.save(); x.translate(W / 2, H - 4); x.rotate(ang);
+          x.strokeStyle = 'rgb(60,96,40)'; x.lineWidth = 2;
+          x.beginPath(); x.moveTo(0, 0); x.quadraticCurveTo(10, -len * 0.5, 0, -len); x.stroke();
+          for (let t = 0.12; t < 0.98; t += 0.06) {
+            const l = 26 * (1 - t) + 6;
+            for (const sd of [-1, 1]) leafShape(0, -len * t, sd * 1.25, l, 5, green(), false);
+          }
+          x.restore();
+        }
+      } else if (kind === 'canopy') {
+        for (let i = 0; i < 70; i++) {
+          const a = rnd() * TAU, r = Math.sqrt(rnd()) * 110;
+          leafShape(W / 2 + Math.cos(a) * r, H / 2 + Math.sin(a) * r, rnd() * TAU, 28 + rnd() * 28, 12 + rnd() * 8, green(-10), false);
+        }
+      } else if (kind === 'vine') {
+        x.strokeStyle = 'rgb(70,84,44)'; x.lineWidth = 3;
+        x.beginPath(); x.moveTo(W / 2, 0);
+        for (let y = 0; y <= H; y += 16) x.lineTo(W / 2 + Math.sin(y * 0.03) * 18, y);
+        x.stroke();
+        for (let y = 10; y < H - 6; y += 13 + rnd() * 10) {
+          const px = W / 2 + Math.sin(y * 0.03) * 18, sd = rnd() < 0.5 ? -1 : 1;
+          leafShape(px, y, sd * (1.6 + rnd() * 0.6) + Math.PI, 22 + rnd() * 18, 11, green(), false);
+        }
+      } else if (kind === 'grass') {
+        for (let i = 0; i < 40; i++) {
+          const bx = W / 2 + (rnd() - 0.5) * 140, h = 80 + rnd() * 150, lean = (rnd() - 0.5) * 70;
+          x.strokeStyle = green(); x.lineWidth = 3 + rnd() * 3;
+          x.beginPath(); x.moveTo(bx, H); x.quadraticCurveTo(bx + lean * 0.3, H - h * 0.6, bx + lean, H - h); x.stroke();
+        }
+      }
+      return this.finish(c, { repeat: false });
+    });
+  }
+  flame() {
+    return this.cached('flame', () => {
+      const W = 64, H = 128, c = this.canvas(W, H), x = c.getContext('2d');
+      x.globalCompositeOperation = 'lighter';
+      for (let i = 0; i < 26; i++) {
+        const t = i / 25, cy = H - 18 - t * (H - 30), r = (1 - t) * 22 + 4;
+        const g = x.createRadialGradient(W / 2, cy, 0, W / 2, cy, r);
+        g.addColorStop(0, `rgba(255,${200 - t * 120 | 0},${120 - t * 100 | 0},${0.22 * (1 - t * 0.6)})`);
+        g.addColorStop(1, 'rgba(255,80,0,0)');
+        x.fillStyle = g; x.beginPath(); x.arc(W / 2, cy, r, 0, TAU); x.fill();
+      }
+      return this.finish(c, { repeat: false });
+    });
+  }
+  // Vertical fade for light columns and sun shafts.
+  beamFade() {
+    return this.cached('beamFade', () => {
+      const c = this.canvas(16, 256), x = c.getContext('2d');
+      const g = x.createLinearGradient(0, 0, 0, 256);
+      g.addColorStop(0, 'rgba(255,255,255,0)'); g.addColorStop(0.3, 'rgba(255,255,255,0.55)');
+      g.addColorStop(0.85, 'rgba(255,255,255,1)'); g.addColorStop(1, 'rgba(255,255,255,0.4)');
+      x.fillStyle = g; x.fillRect(0, 0, 16, 256);
+      return this.finish(c, { repeat: false });
+    });
+  }
+  spikePlate() {
+    return this.cached('spikePlate', () => {
+      const S = 256, c = this.canvas(S), x = c.getContext('2d');
+      const b = this.canvas(128), bx = b.getContext('2d');
+      x.fillStyle = '#4a4236'; x.fillRect(0, 0, S, S);
+      this.paintNoise(x, S, [16, 64], 0.15, 101);
+      bx.fillStyle = '#c0c0c0'; bx.fillRect(0, 0, 128, 128);
+      for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) {
+        const cx = (i + 0.5) * 64, cy = (j + 0.5) * 64;
+        const g = x.createRadialGradient(cx, cy, 2, cx, cy, 18);
+        g.addColorStop(0, '#050403'); g.addColorStop(0.6, '#1a1610'); g.addColorStop(1, 'rgba(26,22,16,0)');
+        x.fillStyle = g; x.beginPath(); x.arc(cx, cy, 18, 0, TAU); x.fill();
+        bx.fillStyle = '#000'; bx.beginPath(); bx.arc(cx / 2, cy / 2, 6, 0, TAU); bx.fill();
+      }
+      return { map: this.finish(c), bump: this.finish(b, { srgb: false }) };
+    });
+  }
+  featherCard() {
+    return this.cached('featherCard', () => {
+      const W = 128, H = 384, c = this.canvas(W, H), x = c.getContext('2d');
+      const g = x.createLinearGradient(0, H, 0, 0);
+      g.addColorStop(0, '#1d8a5a'); g.addColorStop(0.55, '#21c49a'); g.addColorStop(1, '#2a6cff');
+      x.fillStyle = g;
+      x.beginPath(); x.moveTo(W / 2, H - 6);
+      x.quadraticCurveTo(W + 6, H * 0.45, W / 2, 6);
+      x.quadraticCurveTo(-6, H * 0.45, W / 2, H - 6); x.fill();
+      x.strokeStyle = 'rgba(255,240,180,0.9)'; x.lineWidth = 3;
+      x.beginPath(); x.moveTo(W / 2, H - 6); x.lineTo(W / 2, 20); x.stroke();
+      x.strokeStyle = 'rgba(0,30,20,0.35)'; x.lineWidth = 1.2;
+      for (let y = 30; y < H - 20; y += 7) { x.beginPath(); x.moveTo(W / 2, y + 10); x.lineTo(8, y); x.moveTo(W / 2, y + 10); x.lineTo(W - 8, y); x.stroke(); }
+      const e = x.createRadialGradient(W / 2, 70, 2, W / 2, 70, 26);
+      e.addColorStop(0, '#ffe680'); e.addColorStop(0.5, '#1a3cff'); e.addColorStop(1, 'rgba(20,40,255,0)');
+      x.fillStyle = e; x.beginPath(); x.arc(W / 2, 70, 26, 0, TAU); x.fill();
+      return this.finish(c, { repeat: false });
+    });
+  }
+  // A transparent canvas with one symbol, cached.
+  glyphCanvas(kind, color = '#ffffff', size = 256) {
+    const key = `gc:${kind}:${color}:${size}`;
+    if (!this.cache.has(key)) {
+      const c = this.canvas(size), x = c.getContext('2d');
+      if (kind === 'cart') paintCartouche(x, size / 2, size / 2, size, color);
+      else paintSymbol(x, kind, size / 2, size / 2, size, color);
+      this.cache.set(key, c);
+    }
+    return this.cache.get(key);
+  }
+  glyphTex(kind, color = '#ffffff') {
+    return this.cached(`gt:${kind}:${color}`, () => this.finish(this.glyphCanvas(kind, color), { repeat: false }));
+  }
+  // Draw a symbol so it looks cut into stone: shadow, highlight, then the recess.
+  carveInto(x, kind, cx, cy, s, { deep = 'rgba(28,20,10,0.85)', light = 'rgba(255,244,220,0.5)', mid = 'rgba(70,54,34,0.9)' } = {}) {
+    const d = Math.max(1, s * 0.014);
+    x.drawImage(this.glyphCanvas(kind, light), cx - s / 2 + d, cy - s / 2 + d, s, s);
+    x.drawImage(this.glyphCanvas(kind, deep), cx - s / 2 - d, cy - s / 2 - d, s, s);
+    x.drawImage(this.glyphCanvas(kind, mid), cx - s / 2, cy - s / 2, s, s);
+  }
+  // Texture strip for a rotating glyph dial: one cell per face.
+  dialStrip(faces) {
+    return this.cached('dial:' + faces.join(','), () => {
+      const N = faces.length, W = 256, H = 256;
+      const c = this.canvas(W * N, H), x = c.getContext('2d');
+      const e = this.canvas(W * N, H), ex = e.getContext('2d');
+      const stone = this.stone('limestone').canvas;
+      ex.fillStyle = '#000'; ex.fillRect(0, 0, W * N, H);
+      faces.forEach((f, i) => {
+        x.drawImage(stone, (i * 97) % 256, 0, 256, 256, i * W, 0, W, H);
+        x.fillStyle = 'rgba(0,0,0,0.4)'; x.fillRect(i * W, 0, 7, H); x.fillRect(i * W + W - 7, 0, 7, H);
+        x.fillStyle = 'rgba(255,240,210,0.12)'; x.fillRect(i * W + 7, 0, 4, H);
+        const cx = i * W + W / 2;
+        this.carveInto(x, 'cart', cx, H / 2, 230);
+        this.carveInto(x, f, cx, H / 2 - 6, 168, { mid: 'rgba(60,40,22,0.95)' });
+        ex.drawImage(this.glyphCanvas(f, '#ffffff'), cx - 84, H / 2 - 6 - 84, 168, 168);
+      });
+      return { map: this.finish(c, { repeat: false }), em: this.finish(e, { repeat: false }) };
+    });
+  }
+  // Top face of a counting-floor tile: a flagstone with a carved numeral.
+  tileFace(kind) {
+    return this.cached('tile:' + kind, () => {
+      const S = 256, c = this.canvas(S), x = c.getContext('2d');
+      const e = this.canvas(S), ex = e.getContext('2d');
+      const stone = this.stone('limestone').canvas;
+      x.drawImage(stone, 40, 64, 256, 256, 0, 0, S, S);
+      x.fillStyle = 'rgba(40,32,20,0.25)'; x.fillRect(0, 0, S, S);
+      x.strokeStyle = 'rgba(20,14,8,0.7)'; x.lineWidth = 10; x.strokeRect(5, 5, S - 10, S - 10);
+      x.strokeStyle = 'rgba(255,240,210,0.2)'; x.lineWidth = 3; x.strokeRect(13, 13, S - 26, S - 26);
+      ex.fillStyle = '#000'; ex.fillRect(0, 0, S, S);
+      ex.strokeStyle = '#555'; ex.lineWidth = 6; ex.strokeRect(14, 14, S - 28, S - 28);
+      this.carveInto(x, kind, S / 2, S / 2, 190);
+      ex.drawImage(this.glyphCanvas(kind, '#ffffff'), S / 2 - 95, S / 2 - 95, 190, 190);
+      return { map: this.finish(c, { repeat: false }), em: this.finish(e, { repeat: false }) };
+    });
+  }
+  // A painted mural (not cached): stucco ground, step-fret border, then draw(x, w, h).
+  mural(w, h, draw, { bg = '#8a2a1c', ink = '#1d120a', border = '#e8c27a' } = {}) {
     const c = this.canvas(w, h), x = c.getContext('2d');
-    this.drawText(x, c, lines, { w, h, bg, color, font, size, weight, border, align, glow });
+    x.fillStyle = bg; x.fillRect(0, 0, w, h);
+    const rnd = mulberry32(w * 7 + h);
+    for (let i = 0; i < 1800; i++) {
+      x.fillStyle = rnd() < 0.5 ? 'rgba(0,0,0,0.06)' : 'rgba(255,240,210,0.05)';
+      x.fillRect(rnd() * w, rnd() * h, 2 + rnd() * 6, 2 + rnd() * 6);
+    }
+    const bh = Math.min(w, h) * 0.07;
+    x.fillStyle = 'rgba(0,0,0,0.25)'; x.fillRect(0, 0, w, bh * 1.2); x.fillRect(0, h - bh * 1.2, w, bh * 1.2);
+    paintStepFret(x, bh * 0.2, bh * 0.1, w, bh, border);
+    paintStepFret(x, bh * 0.2, h - bh * 1.1, w, bh, border);
+    x.fillStyle = ink; x.strokeStyle = ink;
+    draw(x, w, h, bh * 1.2);
+    // Flaking.
+    x.globalCompositeOperation = 'destination-out';
+    for (let i = 0; i < 26; i++) {
+      const cx = rnd() * w, cy = rnd() * h, r = 4 + rnd() * 16;
+      x.globalAlpha = 0.35 + rnd() * 0.4;
+      x.beginPath(); x.arc(cx, cy, r, 0, TAU); x.fill();
+    }
+    x.globalAlpha = 1; x.globalCompositeOperation = 'source-over';
+    return this.finish(c, { repeat: false });
+  }
+  // Small offering icon for the HUD tray.
+  relicIcon(kind, color) {
+    return this.cached(`icon:${kind}:${color}`, () => {
+      const c = this.canvas(96), x = c.getContext('2d');
+      x.shadowColor = color; x.shadowBlur = 10;
+      x.drawImage(this.glyphCanvas(RELIC_INFO[kind].glyph || kind, color, 96), 0, 0);
+      return c.toDataURL();
+    });
+  }
+  // One-off text texture for signs and screens (not cached).
+  text(lines, { w = 512, h = 256, bg = 'rgba(6,10,18,0.92)', color = '#4fd8ff', font = FONT_DISPLAY, font2 = FONT_BODY, size = 48, weight = 700, border = true, align = 'center', glow = true } = {}) {
+    const c = this.canvas(w, h), x = c.getContext('2d');
+    this.drawText(x, c, lines, { w, h, bg, color, font, font2, size, weight, border, align, glow });
     const t = this.finish(c, { repeat: false });
     t.userData.redraw = (newLines, opts = {}) => {
-      this.drawText(x, c, newLines, { w, h, bg, color, font, size, weight, border, align, glow, ...opts });
+      this.drawText(x, c, newLines, { w, h, bg, color, font, font2, size, weight, border, align, glow, ...opts });
       t.needsUpdate = true;
     };
     return t;
@@ -673,7 +1456,7 @@ class TextureFactory {
     const startY = o.h / 2 - ((arr.length - 1) * lh) / 2;
     arr.forEach((ln, i) => {
       const sz = i === 0 ? o.size : o.size * 0.62;
-      x.font = `${i === 0 ? o.weight : 500} ${sz}px ${i === 0 ? o.font : FONT_BODY}`;
+      x.font = `${i === 0 ? o.weight : 500} ${sz}px ${i === 0 ? o.font : o.font2 || FONT_BODY}`;
       const tx = o.align === 'center' ? o.w / 2 : 30;
       x.fillText(ln, tx, startY + i * lh);
     });
@@ -703,6 +1486,80 @@ function buildMaterials(tex) {
   M.cubeLit = M.cube.clone(); M.cubeLit.emissive = new THREE.Color(0x5dffb0); M.cubeLit.emissiveMap = tex.cubeGlow('#5dffb0');
   M.perception = new THREE.MeshStandardMaterial({ map: tex.cubeFace('core'), emissive: 0xb47cff, emissiveMap: tex.cubeGlow('#d6b0ff'), emissiveIntensity: 2.2, roughness: 0.3, metalness: 0.4 });
   return M;
+}
+
+// Part II material palette, built the first time a temple level loads and
+// then shared by all temple levels.
+function templeMaterials(game) {
+  if (game.T) return game.T;
+  const tex = game.tex;
+  const std = (o) => new THREE.MeshStandardMaterial(o);
+  const lime = tex.stone('limestone');
+  const moss = tex.stone('mossy', { base: [150, 150, 118], moss: 1.2, seed: 33 });
+  const dark = tex.stone('darkstone', { base: [104, 96, 84], mortar: '#1c1812', seed: 35, streaks: 1 });
+  const pave = tex.paving('paving');
+  const paveMoss = tex.paving('pavingMoss', { moss: 1, seed: 49 });
+  const carved = tex.carvedWall('carved');
+  const sp = tex.spikePlate();
+  const T = {};
+  T.stone = std({ color: 0xece0c8, map: lime.map, bumpMap: lime.bump, bumpScale: 2.2, roughness: 0.93, metalness: 0 });
+  T.mossy = std({ color: 0xdfe2cc, map: moss.map, bumpMap: moss.bump, bumpScale: 2.2, roughness: 0.95, metalness: 0 });
+  T.dark = std({ color: 0xc0b8a8, map: dark.map, bumpMap: dark.bump, bumpScale: 2.4, roughness: 0.9, metalness: 0 });
+  T.floor = std({ color: 0xe6dcc6, map: pave.map, bumpMap: pave.bump, bumpScale: 2, roughness: 0.86, metalness: 0 });
+  T.floorMoss = std({ color: 0xd8dcc8, map: paveMoss.map, bumpMap: paveMoss.bump, bumpScale: 2, roughness: 0.9, metalness: 0 });
+  T.carved = std({ color: 0xf2e6ce, map: carved.map, bumpMap: carved.bump, bumpScale: 3.2, roughness: 0.9, metalness: 0 });
+  T.red = std({ color: 0xffffff, map: tex.stucco('red'), bumpMap: lime.bump, bumpScale: 1.4, roughness: 0.82, metalness: 0 });
+  T.teal = std({ color: 0xffffff, map: tex.stucco('teal', [36, 102, 96], 73), bumpMap: lime.bump, bumpScale: 1.4, roughness: 0.82, metalness: 0 });
+  T.ochre = std({ color: 0xffffff, map: tex.stucco('ochre', [196, 148, 70], 75), bumpMap: lime.bump, bumpScale: 1.4, roughness: 0.85, metalness: 0 });
+  T.earth = std({ color: 0xa09684, map: tex.earth(), roughness: 1, metalness: 0 });
+  T.bark = std({ color: 0xa09482, map: tex.bark(), roughness: 0.95, metalness: 0 });
+  T.wood = std({ color: 0x7a5636, map: tex.bark(), roughness: 0.8, metalness: 0 });
+  T.jade = std({ color: 0x33b47a, roughness: 0.22, metalness: 0.1, emissive: 0x0e5232, emissiveIntensity: 0.7 });
+  T.gold = std({ color: 0xffc860, roughness: 0.28, metalness: 1, emissive: 0x3a2400, emissiveIntensity: 0.6 });
+  T.bronze = std({ color: 0xb8803c, roughness: 0.35, metalness: 0.9 });
+  T.mirror = std({ color: 0xffdca8, roughness: 0.06, metalness: 1, emissive: 0x5a3410, emissiveIntensity: 0.7 });
+  T.obsidian = std({ color: 0x100e16, roughness: 0.08, metalness: 0.5 });
+  T.bone = std({ color: 0xe6dcc4, roughness: 0.7, metalness: 0 });
+  T.jasper = std({ color: 0xc23a20, roughness: 0.32, metalness: 0.1, emissive: 0x420a00, emissiveIntensity: 0.5 });
+  T.spikePlate = std({ color: 0xd0c8b8, map: sp.map, bumpMap: sp.bump, bumpScale: 3, roughness: 0.85, metalness: 0.1 });
+  T.void = new THREE.MeshBasicMaterial({ color: 0x000000 });
+  // Invisible pick volumes; double-sided so they work even from inside.
+  T.pick = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
+  const leaf = (kind, color) => std({ map: tex.leaf(kind), color, alphaTest: 0.45, side: THREE.DoubleSide, roughness: 0.78, metalness: 0 });
+  T.leaf = {
+    broad: leaf('broad', 0xd4ecc0), fern: leaf('fern', 0xd4ecc0), canopy: leaf('canopy', 0xc0dca8),
+    vine: leaf('vine', 0xd4e8c0), grass: leaf('grass', 0xc8e0b0),
+  };
+  const add = { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide };
+  T.flameOuter = new THREE.MeshBasicMaterial({ map: tex.flame(), color: new THREE.Color(2.4, 1.15, 0.4), ...add });
+  T.flameInner = new THREE.MeshBasicMaterial({ map: tex.flame(), color: new THREE.Color(2.6, 2.0, 1.1), ...add });
+  // Fire columns are large, so they burn at a gentler brightness.
+  T.jetOuter = new THREE.MeshBasicMaterial({ map: tex.flame(), color: new THREE.Color(1.15, 0.45, 0.12), ...add });
+  T.jetInner = new THREE.MeshBasicMaterial({ map: tex.flame(), color: new THREE.Color(1.1, 0.75, 0.3), ...add });
+  T.blade = std({ color: 0xf0dcb8, roughness: 0.3, metalness: 0.7, emissive: 0x8a5a2a, emissiveIntensity: 0.75 });
+  T.coals = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.4, 0.75, 0.2) });
+  T.feather = std({ map: tex.featherCard(), alphaTest: 0.4, side: THREE.DoubleSide, roughness: 0.4, emissive: 0xffffff, emissiveMap: tex.featherCard(), emissiveIntensity: 0.28 });
+  game.T = T;
+  return T;
+}
+
+// Warm reflections for the temple: torchlight and sun instead of light panels.
+function buildTempleEnvironment(renderer) {
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const env = new THREE.Scene();
+  env.add(new THREE.Mesh(new THREE.BoxGeometry(20, 10, 20), new THREE.MeshBasicMaterial({ color: 0x1c1610, side: THREE.BackSide })));
+  const panel = (x, y, z, w, h, d, c, k) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshBasicMaterial({ color: new THREE.Color(c).multiplyScalar(k) }));
+    m.position.set(x, y, z); env.add(m);
+  };
+  panel(0, 4.9, 0, 3, 0.1, 3, 0xfff0d0, 5);
+  panel(-9.9, 1.5, -4, 0.1, 1.2, 1, 0xff9a40, 4);
+  panel(9.9, 1.5, 4, 0.1, 1.2, 1, 0xff9a40, 4);
+  panel(0, 1.5, -9.9, 1, 1.2, 0.1, 0xff8a30, 3);
+  panel(0, -4.9, 0, 20, 0.1, 20, 0x3a3020, 1);
+  const rt = pmrem.fromScene(env, 0.04);
+  pmrem.dispose();
+  return rt.texture;
 }
 
 const _neonCache = new Map();
@@ -1233,8 +2090,9 @@ class Switch extends Entity {
 
 /* Sliding door ------------------------------------------------------------ */
 class Door extends Entity {
-  constructor(level, { min, max, slide, mat = null, label = null, interactive = false, onOpen = null, glyph = null, speed = 0.9, lightColor = 0xff5470, openColor = 0x5dffb0 }) {
+  constructor(level, { min, max, slide, mat = null, label = null, interactive = false, onOpen = null, glyph = null, speed = 0.9, lightColor = 0xff5470, openColor = 0x5dffb0, strip = true, sound = 'metal' }) {
     super(level);
+    this.sound = sound;
     this.closedColor = lightColor;
     this.openColor = openColor;
     this.closedMin = min.clone();
@@ -1254,15 +2112,19 @@ class Door extends Entity {
     const panel = new THREE.Mesh(new THREE.BoxGeometry(size.x, size.y, size.z), mat || M.metal);
     panel.castShadow = true; panel.receiveShadow = true;
     this.mesh.add(panel);
-    // A glowing status strip on both faces of the panel.
-    this.lightMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(lightColor).multiplyScalar(2.5) });
-    level.own(this.lightMat);
+    this.panel = panel;
     const thinAxis = size.x < size.z ? 0 : 2;
-    const sx = thinAxis === 0 ? size.x + 0.02 : size.x * 0.7;
-    const sz = thinAxis === 2 ? size.z + 0.02 : size.z * 0.7;
-    const strip = new THREE.Mesh(new THREE.BoxGeometry(sx, 0.08, sz), this.lightMat);
-    strip.position.y = size.y * 0.12;
-    this.mesh.add(strip);
+    // A glowing status strip on both faces of the panel (stone temple doors have none).
+    this.lightMat = null;
+    if (strip) {
+      this.lightMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(lightColor).multiplyScalar(2.5) });
+      level.own(this.lightMat);
+      const sx = thinAxis === 0 ? size.x + 0.02 : size.x * 0.7;
+      const sz = thinAxis === 2 ? size.z + 0.02 : size.z * 0.7;
+      const stripMesh = new THREE.Mesh(new THREE.BoxGeometry(sx, 0.08, sz), this.lightMat);
+      stripMesh.position.y = size.y * 0.12;
+      this.mesh.add(stripMesh);
+    }
     if (glyph) {
       for (const side of [1, -1]) {
         const g = new THREE.Mesh(new THREE.PlaneGeometry(0.7, 0.7), new THREE.MeshBasicMaterial({ map: this.game.tex.symbol(glyph, '#ffc457'), transparent: true, color: new THREE.Color(2, 2, 2) }));
@@ -1281,18 +2143,22 @@ class Door extends Entity {
     this._min = V3(); this._max = V3();
   }
   get isOpen() { return this.t > 0.98; }
-  setLight(hex) { this.lightMat.color.set(hex).multiplyScalar(2.5); }
+  setLight(hex) { if (this.lightMat) this.lightMat.color.set(hex).multiplyScalar(2.5); }
+  playSound(open) {
+    if (this.sound === 'stone') this.game.audio.stoneDoor(open, this.speed);
+    else this.game.audio.door(open);
+  }
   open(silent = false) {
     if (this.target === 1) return;
     this.target = 1;
     this.setLight(this.openColor);
-    if (!silent) this.game.audio.door(true);
+    if (!silent) this.playSound(true);
   }
   close(silent = false) {
     if (this.target === 0) return;
     this.target = 0;
     this.setLight(this.closedColor);
-    if (!silent) this.game.audio.door(false);
+    if (!silent) this.playSound(false);
   }
   snap(open) {
     this.target = this.t = open ? 1 : 0;
@@ -1336,7 +2202,7 @@ class Door extends Entity {
 
 /* Pressure plate ---------------------------------------------------------- */
 class PressurePlate extends Entity {
-  constructor(level, { pos, size = 1.6, minSize = 0, acceptsPlayer = false, onChange = null, color = 0x4fd8ff, label = null }) {
+  constructor(level, { pos, size = 1.6, minSize = 0, acceptsPlayer = false, onChange = null, color = 0x4fd8ff, label = null, glyph = null }) {
     super(level);
     this.pos = pos.clone();
     this.size = size;
@@ -1346,12 +2212,16 @@ class PressurePlate extends Entity {
     this.pressed = false;
     this.anim = 0;
     const M = this.game.M;
-    const base = new THREE.Mesh(new THREE.BoxGeometry(size, 0.05, size), M.trim);
+    // Temple plates are carved stone with a glyph instead of metal and neon.
+    const T = level.T;
+    const base = new THREE.Mesh(new THREE.BoxGeometry(size, 0.05, size), T ? T.dark : M.trim);
     base.position.set(pos.x, pos.y + 0.025, pos.z);
     base.receiveShadow = true;
-    const ring = new THREE.Mesh(new THREE.BoxGeometry(size + 0.12, 0.03, size + 0.12), neon(color, 1.6));
+    const ring = new THREE.Mesh(new THREE.BoxGeometry(size + 0.12, 0.03, size + 0.12), T ? T.gold : neon(color, 1.6));
     ring.position.set(pos.x, pos.y + 0.012, pos.z);
-    this.topMat = new THREE.MeshStandardMaterial({ color: 0x2a2f38, emissive: color, emissiveIntensity: 0.3, roughness: 0.4, metalness: 0.6 });
+    this.topMat = T
+      ? new THREE.MeshStandardMaterial({ map: this.game.tex.tileFace(glyph || 'sun').map, emissive: color, emissiveMap: this.game.tex.tileFace(glyph || 'sun').em, emissiveIntensity: 0.3, roughness: 0.85, metalness: 0 })
+      : new THREE.MeshStandardMaterial({ color: 0x2a2f38, emissive: color, emissiveIntensity: 0.3, roughness: 0.4, metalness: 0.6 });
     level.own(this.topMat);
     this.top = new THREE.Mesh(new THREE.BoxGeometry(size - 0.24, 0.06, size - 0.24), this.topMat);
     this.top.position.set(pos.x, pos.y + 0.08, pos.z);
@@ -1387,7 +2257,7 @@ class PressurePlate extends Entity {
 }
 
 /* Physics props: cubes, energy cores, keycards and perception blocks ------- */
-const PROP_NAMES = { cube: 'cube', core: 'energy core', key: 'keycard', perception: 'perception block' };
+const PROP_NAMES = { cube: 'cube', core: 'energy core', key: 'keycard', perception: 'perception block', block: 'stone block' };
 class PhysObject extends Entity {
   constructor(level, { kind = 'cube', pos, size = 0.7, cradle = false }) {
     super(level);
@@ -2053,8 +2923,13 @@ class ParticleField extends Entity {
    of builder helpers used by the concrete levels below.
    --------------------------------------------------------------------- */
 class Level {
-  constructor(game, cp = 0) {
+  constructor(game, cp = 0, carry = null) {
     this.game = game;
+    // State that survives a respawn within the level (e.g. relics already found).
+    this.carry = carry || {};
+    // Entities with hits(min, max) that kill the player on contact.
+    this.hazards = [];
+    this.relicKinds = null;
     this.M = game.M;
     this.cp = cp;
     this.checkpoint = cp;
@@ -3100,6 +3975,3154 @@ class Level5 extends Level {
   }
 }
 
+/* =====================================================================
+   PART II — THE SUNKEN TEMPLE
+   Shared pieces for levels 6–10: offerings, glyph dials, push blocks,
+   traps, sun mirrors and the TempleLevel builder.
+   ===================================================================== */
+
+// Offerings and sacred stones. `glyph` picks the HUD icon (defaults to the key).
+const RELIC_INFO = {
+  mask: { name: 'Jade Mask', color: '#5fe0a0', hex: 0x5fe0a0 },
+  disc: { name: 'Sun Disc', color: '#ffc457', hex: 0xffc457 },
+  blade: { name: 'Obsidian Blade', color: '#b49cff', hex: 0xb49cff },
+  feather: { name: 'Quetzal Feather', color: '#42e8d0', hex: 0x42e8d0 },
+  idol: { name: 'Serpent Idol', color: '#ff7a52', hex: 0xff7a52 },
+  heart: { name: 'Heart of Jade', color: '#4dffa0', hex: 0x4dffa0 },
+  east: { name: 'Red Stone of the East', color: '#ff5a46', hex: 0xff5a46, glyph: 'gem', stone: 0xd8322a },
+  north: { name: 'White Stone of the North', color: '#f4f4ff', hex: 0xf0f0ff, glyph: 'gem', stone: 0xf2f0e8 },
+  west: { name: 'Black Stone of the West', color: '#a58cff', hex: 0x7a5cff, glyph: 'gem', stone: 0x16121c },
+  south: { name: 'Yellow Stone of the South', color: '#ffd84a', hex: 0xffd84a, glyph: 'gem', stone: 0xffc232 },
+  center: { name: 'Green Heart of the World', color: '#4dff9a', hex: 0x4dff9a, glyph: 'gem', stone: 0x2fd07a },
+};
+
+// Concatenate geometries (positions, normals, uvs, indices) into one.
+function mergeGeometries(geos) {
+  let nv = 0, ni = 0;
+  for (const g of geos) { nv += g.attributes.position.count; ni += g.index ? g.index.count : g.attributes.position.count; }
+  const pos = new Float32Array(nv * 3), nor = new Float32Array(nv * 3), uv = new Float32Array(nv * 2);
+  const idx = nv > 65535 ? new Uint32Array(ni) : new Uint16Array(ni);
+  let vo = 0, io = 0;
+  for (const g of geos) {
+    const p = g.attributes.position, n = g.attributes.normal, u = g.attributes.uv;
+    pos.set(p.array, vo * 3);
+    nor.set(n.array, vo * 3);
+    if (u) uv.set(u.array, vo * 2);
+    if (g.index) {
+      const a = g.index.array;
+      for (let i = 0; i < a.length; i++) idx[io + i] = a[i] + vo;
+      io += a.length;
+    } else {
+      for (let i = 0; i < p.count; i++) idx[io + i] = vo + i;
+      io += p.count;
+    }
+    vo += p.count;
+    g.dispose();
+  }
+  const out = new THREE.BufferGeometry();
+  out.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  out.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+  out.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  out.setIndex(new THREE.BufferAttribute(idx, 1));
+  out.computeBoundingSphere();
+  return out;
+}
+
+// Small hand-sized model of an offering, facing +Z.
+function buildRelicMesh(level, kind) {
+  const T = level.T;
+  const g = new THREE.Group();
+  const add = (geo, mat, x = 0, y = 0, z = 0) => {
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(x, y, z);
+    m.castShadow = true;
+    g.add(m);
+    return m;
+  };
+  switch (kind) {
+    case 'mask': {
+      add(new THREE.SphereGeometry(0.2, 24, 18), T.jade).scale.set(1, 1.22, 0.5);
+      for (const sx of [-1, 1]) {
+        add(new THREE.BoxGeometry(0.08, 0.026, 0.05), T.obsidian, sx * 0.075, 0.05, 0.085);
+        add(new THREE.TorusGeometry(0.045, 0.016, 8, 16), T.gold, sx * 0.215, 0, 0).rotation.y = Math.PI / 2;
+      }
+      add(new THREE.BoxGeometry(0.1, 0.024, 0.05), T.obsidian, 0, -0.11, 0.075);
+      add(new THREE.BoxGeometry(0.035, 0.09, 0.06), T.jade, 0, -0.02, 0.095);
+      add(new THREE.TorusGeometry(0.21, 0.022, 8, 24, Math.PI), T.gold, 0, 0.03, 0).scale.set(1, 1.15, 0.6);
+      break;
+    }
+    case 'disc': {
+      add(new THREE.CylinderGeometry(0.22, 0.22, 0.04, 32), T.gold).rotation.x = Math.PI / 2;
+      add(new THREE.CylinderGeometry(0.09, 0.09, 0.06, 24), T.jade).rotation.x = Math.PI / 2;
+      for (let k = 0; k < 8; k++) {
+        const a = (k / 8) * TAU;
+        add(new THREE.ConeGeometry(0.045, 0.12, 4), T.gold, Math.cos(a) * 0.28, Math.sin(a) * 0.28, 0).rotation.z = a - Math.PI / 2;
+      }
+      break;
+    }
+    case 'blade': {
+      add(new THREE.OctahedronGeometry(0.1, 0), T.obsidian, 0, 0.1, 0).scale.set(0.9, 3.0, 0.25);
+      add(new THREE.CylinderGeometry(0.028, 0.032, 0.16, 10), T.wood, 0, -0.24, 0);
+      add(new THREE.BoxGeometry(0.15, 0.03, 0.05), T.gold, 0, -0.16, 0);
+      add(new THREE.SphereGeometry(0.04, 12, 8), T.gold, 0, -0.33, 0);
+      break;
+    }
+    case 'feather': {
+      add(new THREE.PlaneGeometry(0.22, 0.64), T.feather, 0, 0.02, 0).rotation.z = 0.22;
+      add(new THREE.CylinderGeometry(0.025, 0.025, 0.08, 8), T.gold, 0.07, -0.27, 0).rotation.z = 0.22;
+      break;
+    }
+    case 'idol': {
+      add(new THREE.TorusKnotGeometry(0.1, 0.035, 80, 10, 2, 3), T.jasper);
+      add(new THREE.BoxGeometry(0.1, 0.075, 0.14), T.jasper, 0, 0.2, 0.03);
+      for (const sx of [-1, 1]) add(new THREE.SphereGeometry(0.018, 8, 6), T.jade, sx * 0.035, 0.225, 0.095);
+      add(new THREE.CylinderGeometry(0.1, 0.12, 0.05, 16), T.gold, 0, -0.17, 0);
+      break;
+    }
+    case 'heart': {
+      add(new THREE.IcosahedronGeometry(0.17, 1), T.jade).scale.set(1, 1.18, 0.9);
+      add(new THREE.TorusGeometry(0.2, 0.018, 8, 32), T.gold).rotation.x = Math.PI / 2;
+      add(new THREE.TorusGeometry(0.2, 0.018, 8, 32), T.gold);
+      break;
+    }
+    default: {
+      const info = RELIC_INFO[kind];
+      const mat = level.own(new THREE.MeshStandardMaterial({
+        color: info.stone, roughness: 0.18, metalness: 0.25, flatShading: true,
+        emissive: info.hex, emissiveIntensity: kind === 'west' ? 0.45 : 0.3,
+      }));
+      add(new THREE.IcosahedronGeometry(0.17, 0), mat).scale.set(1, 1.3, 1);
+      add(new THREE.TorusGeometry(0.25, 0.016, 8, 32), T.gold).rotation.x = Math.PI / 2;
+      break;
+    }
+  }
+  return g;
+}
+
+/* A floating offering marked by a pillar of light. ---------------------- */
+class Relic extends Entity {
+  constructor(level, { kind, pos, beacon = true, onTake = null }) {
+    super(level);
+    this.kind = kind;
+    this.info = RELIC_INFO[kind];
+    this.onTake = onTake;
+    this.base = pos.clone();
+    this.state = 'idle';
+    this.t = rand(0, 10);
+    this.range = 3.4;
+    this.group = new THREE.Group();
+    this.group.position.copy(pos);
+    this.model = buildRelicMesh(level, kind);
+    this.haloMat = level.own(new THREE.MeshBasicMaterial({ map: this.game.tex.glowSprite(), color: new THREE.Color(this.info.hex).multiplyScalar(0.9), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+    this.halo = new THREE.Mesh(new THREE.PlaneGeometry(1.3, 1.3), this.haloMat);
+    const pick = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.9, 0.8), level.T.pick);
+    pick.visible = false;
+    this.group.add(this.model, this.halo, pick);
+    level.scene.add(this.group);
+    level.addPick(pick, this);
+    this.beacon = beacon ? level.lightColumn(pos, this.info.hex) : null;
+    if (this.beacon) this.beacon.userData.op = 0.22;
+  }
+  prompt() { return this.state === 'idle' ? { text: `Take the ${this.info.name}` } : null; }
+  interact() {
+    if (this.state !== 'idle') return;
+    this.state = 'taking';
+    this.tk = 0;
+    this.from = this.group.position.clone();
+    this.level.collectRelic(this.kind);
+    if (this.onTake) this.onTake(this);
+  }
+  update(dt) {
+    this.t += dt;
+    if (this.state === 'gone') return;
+    this.model.rotation.y += dt * 1.1;
+    this.halo.quaternion.copy(this.game.camera.quaternion);
+    this.haloMat.opacity = 0.55 + Math.sin(this.t * 2.4) * 0.15;
+    if (this.state === 'idle') {
+      this.group.position.y = this.base.y + Math.sin(this.t * 1.6) * 0.06;
+      // The pillar of light guides from afar and fades away up close.
+      if (this.beacon) this.beacon.material.opacity = this.beacon.userData.op * clamp((this.game.camera.position.distanceTo(this.base) - 2.5) / 7, 0, 1);
+      return;
+    }
+    // Fly into the player's hands.
+    this.tk = Math.min(1, this.tk + dt / 0.45);
+    const cam = this.game.camera;
+    const target = _v1.set(0, -0.25, -0.6).applyQuaternion(cam.quaternion).add(cam.position);
+    this.group.position.lerpVectors(this.from, target, easeInOut(this.tk));
+    this.group.scale.setScalar(1 - this.tk * 0.85);
+    if (this.beacon) this.beacon.material.opacity = (1 - this.tk) * this.beacon.userData.op;
+    if (this.tk >= 1) {
+      this.state = 'gone';
+      this.group.visible = false;
+      if (this.beacon) this.beacon.visible = false;
+    }
+  }
+}
+
+/* Niches that accept offerings. They sit on `parent` (a gate slab or the
+   world tree); slot positions and normals are in the parent's frame. ---- */
+class OfferingShrine extends Entity {
+  constructor(level, { parent, slots, onPlace = null, onComplete = null, size = 0.66 }) {
+    super(level);
+    this.onPlace = onPlace;
+    this.onComplete = onComplete;
+    this.range = 3.6;
+    this.queue = [];
+    this.qt = 0;
+    this.doneT = 0;
+    const T = level.T, tex = this.game.tex;
+    const backMat = level.own(new THREE.MeshStandardMaterial({ color: 0x120e08, roughness: 1 }));
+    this.slots = slots.map((s) => {
+      const info = RELIC_INFO[s.kind];
+      const g = new THREE.Group();
+      g.position.copy(s.pos);
+      level.orientPlane(g, s.normal || V3(0, 0, 1), s.up || Y_UP);
+      parent.add(g);
+      const back = new THREE.Mesh(new THREE.PlaneGeometry(size, size), backMat);
+      back.position.z = 0.012;
+      const outline = new THREE.Mesh(new THREE.PlaneGeometry(size * 0.84, size * 0.84), level.own(new THREE.MeshBasicMaterial({
+        map: tex.glyphTex(info.glyph || s.kind, '#ffffff'), transparent: true, depthWrite: false, color: new THREE.Color(info.hex).multiplyScalar(0.4),
+      })));
+      outline.position.z = 0.022;
+      const fm = level.own(new THREE.MeshStandardMaterial({ color: 0x5a4a34, roughness: 0.6, metalness: 0.5, emissive: new THREE.Color(info.hex), emissiveIntensity: 0 }));
+      const t = 0.07, h = size / 2 + t / 2;
+      for (const [x, y, w, hh] of [[0, h, size + 2 * t, t], [0, -h, size + 2 * t, t], [-h, 0, t, size], [h, 0, t, size]]) {
+        const b = new THREE.Mesh(new THREE.BoxGeometry(w, hh, 0.08), fm);
+        b.position.set(x, y, 0.04);
+        g.add(b);
+      }
+      const pick = new THREE.Mesh(new THREE.PlaneGeometry(size + 0.4, size + 0.4), T.void);
+      pick.visible = false;
+      pick.position.z = 0.06;
+      g.add(back, outline, pick);
+      level.addPick(pick, this);
+      return { kind: s.kind, g, outline, fm, placed: false, model: null, t: rand(0, 5) };
+    });
+    const placed = level.carry.placed || [];
+    for (const sl of this.slots) if (placed.includes(sl.kind)) this.fill(sl, true);
+    this.complete = this.slots.every((s) => s.placed);
+  }
+  carried() {
+    const found = this.level.carry.found || [];
+    return this.slots.filter((s) => !s.placed && !this.queue.includes(s) && found.includes(s.kind));
+  }
+  get remaining() { return this.slots.filter((s) => !s.placed).length; }
+  prompt() {
+    if (this.complete || this.queue.length) return null;
+    const list = this.carried();
+    if (list.length) return { text: list.length === 1 ? `Place the ${RELIC_INFO[list[0].kind].name}` : `Place ${list.length} offerings` };
+    const r = this.remaining;
+    return { text: `${r} offering${r === 1 ? '' : 's'} still missing`, far: true };
+  }
+  interact(game) {
+    const list = this.carried();
+    if (!list.length) { game.audio.deny(); return; }
+    this.queue.push(...list);
+    this.qt = 0;
+  }
+  fill(sl, silent = false) {
+    sl.placed = true;
+    const c = this.level.carry;
+    c.placed = c.placed || [];
+    if (!c.placed.includes(sl.kind)) c.placed.push(sl.kind);
+    sl.model = buildRelicMesh(this.level, sl.kind);
+    sl.model.position.z = 0.22;
+    sl.model.scale.setScalar(silent ? 1 : 0.01);
+    sl.g.add(sl.model);
+    sl.fm.color.set(0xffc860);
+    sl.fm.metalness = 1;
+    sl.fm.roughness = 0.3;
+    sl.fm.emissiveIntensity = 0.22;
+    sl.outline.visible = false;
+    if (!silent) {
+      this.game.audio.offering();
+      this.game.flash(RELIC_INFO[sl.kind].hex, 0.2);
+    }
+    if (this.onPlace) this.onPlace(sl.kind, silent);
+    this.level.refreshRelics();
+  }
+  update(dt) {
+    if (this.queue.length) {
+      this.qt -= dt;
+      if (this.qt <= 0) {
+        this.fill(this.queue.shift());
+        this.qt = 0.4;
+        if (!this.queue.length && !this.complete && this.slots.every((s) => s.placed)) { this.complete = true; this.doneT = 0.9; }
+      }
+    }
+    if (this.doneT > 0) {
+      this.doneT -= dt;
+      if (this.doneT <= 0 && this.onComplete) this.onComplete(false);
+    }
+    for (const sl of this.slots) {
+      if (!sl.model) continue;
+      sl.t += dt;
+      sl.model.rotation.y = Math.sin(sl.t * 0.8) * 0.5;
+      sl.model.scale.setScalar(Math.min(1, sl.model.scale.x + dt * 3));
+    }
+  }
+}
+
+/* A carved stone drum that turns one face at a time. ------------------- */
+class GlyphDial extends Entity {
+  constructor(level, { pos, facing = V3(0, 0, 1), faces, value = 0, onChange = null, title = null, radius = 0.6, height = 0.9, label = 'Turn the dial' }) {
+    super(level);
+    this.faces = faces;
+    this.N = faces.length;
+    this.value = value;
+    this.onChange = onChange;
+    this.label = label;
+    this.step = TAU / this.N;
+    this.angle = this.target = -(value + 0.5) * this.step;
+    this.cool = 0;
+    this.range = 3.1;
+    const T = level.T, tex = this.game.tex;
+    const g = this.group = new THREE.Group();
+    g.position.copy(pos);
+    g.rotation.y = Math.atan2(facing.x, facing.z);
+    const baseH = 0.6;
+    const base = new THREE.Mesh(new THREE.BoxGeometry(1.4, baseH, 1.4), T.dark);
+    base.position.y = baseH / 2;
+    const plinth = new THREE.Mesh(new THREE.BoxGeometry(1.25, 0.08, 1.25), T.carved);
+    plinth.position.y = baseH + 0.04;
+    const strip = tex.dialStrip(faces);
+    this.mat = level.own(new THREE.MeshStandardMaterial({ map: strip.map, emissive: 0xffa860, emissiveMap: strip.em, emissiveIntensity: 0.32, roughness: 0.85, metalness: 0 }));
+    this.drum = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, height, this.N, 1), [this.mat, T.dark, T.dark]);
+    const drumY = baseH + 0.09 + height / 2;
+    this.drum.position.y = drumY;
+    this.drum.rotation.y = this.angle;
+    const cap = new THREE.Mesh(new THREE.CylinderGeometry(radius * 1.08, radius * 1.08, 0.12, this.N), T.dark);
+    cap.position.y = drumY + height / 2 + 0.07;
+    const ptr = new THREE.Mesh(new THREE.ConeGeometry(0.07, 0.16, 4), T.gold);
+    ptr.position.set(0, baseH + 0.16, 0.66);
+    for (const m of [base, plinth, this.drum, cap, ptr]) { m.castShadow = true; m.receiveShadow = true; g.add(m); }
+    let top = drumY + height / 2 + 0.13;
+    if (title) {
+      const tab = new THREE.Mesh(new THREE.BoxGeometry(0.66, 0.66, 0.16), T.stone);
+      tab.position.set(0, top + 0.35, 0);
+      const face = new THREE.Mesh(new THREE.PlaneGeometry(0.54, 0.54), level.own(new THREE.MeshStandardMaterial({
+        map: tex.glyphTex(title, '#3a2614'), transparent: true, roughness: 0.9,
+        emissive: 0xffb070, emissiveMap: tex.glyphTex(title, '#ffffff'), emissiveIntensity: 0.4,
+      })));
+      face.position.set(0, top + 0.35, 0.085);
+      tab.castShadow = true;
+      g.add(tab, face);
+      top += 0.7;
+    }
+    level.scene.add(g);
+    level.world.addBox(pos.x - 0.7, pos.y, pos.z - 0.7, pos.x + 0.7, pos.y + top, pos.z + 0.7, this, 'dial');
+    level.addPick(this.drum, this);
+  }
+  get symbol() { return this.faces[this.value]; }
+  prompt() { return { text: this.label }; }
+  interact() {
+    if (this.cool > 0) return;
+    this.value = (this.value + 1) % this.N;
+    this.target -= this.step;
+    this.cool = 0.3;
+    this.game.audio.stoneGrind(0.32, 0.7);
+    this.game.audio.trapClick(0.5);
+    if (this.onChange) this.onChange(this.value, this);
+  }
+  setValue(v) {
+    this.value = v;
+    this.angle = this.target = -(v + 0.5) * this.step;
+    this.drum.rotation.y = this.angle;
+  }
+  update(dt) {
+    this.cool = Math.max(0, this.cool - dt);
+    this.angle = damp(this.angle, this.target, 12, dt);
+    this.drum.rotation.y = this.angle;
+  }
+}
+
+/* A heavy stone block that slides one step when pushed. It behaves like a
+   physics prop for pressure plates and falls into pits. ---------------- */
+class PushBlock extends Entity {
+  constructor(level, { pos, size = V3(1.6, 1.1, 1.6), step = 2, mat = null }) {
+    super(level);
+    this.kind = 'block';
+    this.pos = pos.clone();
+    this.home = pos.clone();
+    this.vel = V3();
+    this.half = size.clone().multiplyScalar(0.5);
+    this.size = Math.min(size.x, size.z);
+    this.step = step;
+    this.held = false;
+    this.locked = false;
+    this.cradle = false;
+    this.grounded = true;
+    this.slide = null;
+    this.falling = false;
+    this.range = 2.9;
+    const T = level.T;
+    this.mesh = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.BoxGeometry(size.x, size.y, size.z), mat || T.carved);
+    body.castShadow = true;
+    body.receiveShadow = true;
+    const band = new THREE.Mesh(new THREE.BoxGeometry(size.x + 0.03, 0.14, size.z + 0.03), T.red);
+    band.position.y = size.y / 2 - 0.2;
+    this.mesh.add(body, band);
+    this.mesh.position.copy(this.pos);
+    level.scene.add(this.mesh);
+    this.solid = level.world.add(V3(), V3(), this, 'object');
+    this.solid.kinematic = true;
+    this.syncSolid();
+    level.objects.push(this);
+    level.addPick(body, this);
+    level.addPick(band, this);
+    this._a = V3();
+    this._b = V3();
+  }
+  syncSolid() { boxFrom(this.pos, this.half, this.solid.min, this.solid.max); }
+  standingOn(game) { const p = game.player; return p.grounded && p.ground && p.ground.owner === this; }
+  pushDir(game) {
+    const d = _v1.subVectors(this.pos, game.player.pos);
+    return Math.abs(d.x) > Math.abs(d.z) ? V3(Math.sign(d.x), 0, 0) : V3(0, 0, Math.sign(d.z));
+  }
+  canMove(dir) {
+    const to = _v2.copy(this.pos).addScaledVector(dir, this.step);
+    const mn = this._a.copy(this.pos).min(to).sub(this.half);
+    const mx = this._b.copy(this.pos).max(to).add(this.half);
+    mn.x += 0.03; mn.z += 0.03; mx.x -= 0.03; mx.z -= 0.03; mn.y += 0.06; mx.y -= 0.02;
+    return !this.level.world.firstOverlap(mn, mx, (s) => s.owner === this);
+  }
+  supported() {
+    this._a.set(this.pos.x - this.half.x + 0.2, this.pos.y - this.half.y - 0.08, this.pos.z - this.half.z + 0.2);
+    this._b.set(this.pos.x + this.half.x - 0.2, this.pos.y - this.half.y - 0.01, this.pos.z + this.half.z - 0.2);
+    return !!this.level.world.firstOverlap(this._a, this._b, (s) => s.owner === this || s.tag === 'player');
+  }
+  prompt(game) {
+    if (this.slide || this.falling) return null;
+    if (this.standingOn(game)) return { text: "Can't push — you're standing on it", far: true };
+    return { text: 'Push the stone block' };
+  }
+  interact(game) {
+    if (this.slide || this.falling) return;
+    if (this.standingOn(game)) { game.audio.deny(); return; }
+    const dir = this.pushDir(game);
+    if (!this.canMove(dir)) { game.audio.deny(); game.ui.toast('IT WILL NOT BUDGE'); return; }
+    this.slide = { from: this.pos.clone(), to: this.pos.clone().addScaledVector(dir, this.step), t: 0 };
+    game.audio.stoneGrind(0.75, 1.1);
+  }
+  update(dt) {
+    const prev = _v3.copy(this.pos);
+    const px = prev.x, py = prev.y, pz = prev.z;
+    if (this.slide) {
+      const s = this.slide;
+      const nt = Math.min(1, s.t + dt / 0.75);
+      const np = V3().lerpVectors(s.from, s.to, easeInOut(nt));
+      // Hold still if the player has stepped into the block's path.
+      boxFrom(np, this.half, this._a, this._b);
+      const pl = this.game.player.solid;
+      if (!pl || !boxOverlap(this._a, this._b, pl.min, pl.max)) { s.t = nt; this.pos.copy(np); }
+      if (s.t >= 1) {
+        this.slide = null;
+        this.game.audio.thump(0.6);
+        if (!this.supported()) { this.falling = true; this.vel.set(0, 0, 0); }
+      }
+    } else if (this.falling) {
+      this.vel.y = Math.max(this.vel.y - GRAVITY * dt, -30);
+      const res = moveBody(this.pos, this.vel, this.half, dt, this.level.world, { up: Y_UP, ignore: (s) => s.owner === this || s.tag === 'player' });
+      if (res.grounded) {
+        this.falling = false;
+        this.vel.set(0, 0, 0);
+        this.game.audio.thump(1.3);
+        this.game.player.shake = 0.3;
+      }
+    }
+    this.solid.delta.set(this.pos.x - px, this.pos.y - py, this.pos.z - pz);
+    this.syncSolid();
+    this.mesh.position.copy(this.pos);
+  }
+}
+
+/* Wall lever --------------------------------------------------------------- */
+class StoneLever extends Entity {
+  constructor(level, { pos, normal, label = 'Pull the lever', onPull = null }) {
+    super(level);
+    this.label = label;
+    this.onPull = onPull;
+    this.used = false;
+    this.range = 3;
+    const T = level.T;
+    const g = this.group = new THREE.Group();
+    g.position.copy(pos);
+    level.orientPlane(g, normal, Y_UP);
+    const plate = new THREE.Mesh(new THREE.BoxGeometry(0.6, 1.0, 0.12), T.carved);
+    plate.position.z = 0.06;
+    const slot = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.62, 0.02), T.void);
+    slot.position.z = 0.125;
+    this.arm = new THREE.Group();
+    this.arm.position.z = 0.13;
+    const rod = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.04, 0.5, 8), T.wood);
+    rod.position.y = 0.25;
+    const knob = new THREE.Mesh(new THREE.SphereGeometry(0.075, 12, 8), T.gold);
+    knob.position.y = 0.52;
+    this.arm.add(rod, knob);
+    this.arm.rotation.x = 0.45;
+    g.add(plate, slot, this.arm);
+    level.scene.add(g);
+    for (const m of [plate, rod, knob]) level.addPick(m, this);
+  }
+  prompt() { return this.used ? null : { text: this.label }; }
+  interact(game) {
+    if (this.used) return;
+    this.used = true;
+    game.audio.stoneGrind(0.4, 0.8);
+    game.audio.trapClick();
+    if (this.onPull) this.onPull(this);
+  }
+  update(dt) { this.arm.rotation.x = damp(this.arm.rotation.x, this.used ? Math.PI - 0.45 : 0.45, 9, dt); }
+}
+
+/* Floor tile that crumbles a moment after you step on it (unless safe). -- */
+class CrumbleTile extends Entity {
+  constructor(level, { min, max, mat, top = null, safe = false, delay = 0.3, regen = 0, onStep = null }) {
+    super(level);
+    this.safe = safe;
+    this.delay = delay;
+    this.regen = regen;
+    this.onStep = onStep;
+    this.state = 'idle';
+    this.t = 0;
+    this.glow = 0;
+    this.lit = false;
+    this.home = V3().addVectors(min, max).multiplyScalar(0.5);
+    const size = V3().subVectors(max, min);
+    this.mesh = new THREE.Group();
+    this.mesh.position.copy(this.home);
+    const body = new THREE.Mesh(new THREE.BoxGeometry(size.x, size.y, size.z), mat);
+    body.castShadow = true;
+    body.receiveShadow = true;
+    this.mesh.add(body);
+    this.topMat = top;
+    if (top) {
+      const f = new THREE.Mesh(new THREE.PlaneGeometry(size.x * 0.97, size.z * 0.97), top);
+      f.rotation.x = -Math.PI / 2;
+      f.position.y = size.y / 2 + 0.006;
+      f.receiveShadow = true;
+      this.mesh.add(f);
+    }
+    level.scene.add(this.mesh);
+    this.solid = level.world.add(min, max, this, 'tile');
+    this.vel = 0;
+    this.spin = V3(rand(-1.2, 1.2), 0, rand(-1.2, 1.2));
+  }
+  standing() { const p = this.game.player; return p.grounded && p.ground === this.solid; }
+  update(dt) {
+    this.t += dt;
+    switch (this.state) {
+      case 'idle':
+        if (this.standing()) {
+          if (!this.lit && this.onStep) this.onStep(this);
+          if (this.safe) this.lit = true;
+          else { this.state = 'shaking'; this.t = 0; this.game.audio.crumble(0.5); }
+        }
+        break;
+      case 'shaking':
+        this.mesh.position.set(this.home.x + rand(-0.035, 0.035), this.home.y - this.t * 0.06, this.home.z + rand(-0.035, 0.035));
+        if (this.t >= this.delay) { this.state = 'falling'; this.t = 0; this.solid.enabled = false; this.vel = 0; this.game.audio.crumble(1); }
+        break;
+      case 'falling':
+        this.vel += GRAVITY * 0.8 * dt;
+        this.mesh.position.y -= this.vel * dt;
+        this.mesh.rotation.x += this.spin.x * dt;
+        this.mesh.rotation.z += this.spin.z * dt;
+        if (this.t > 2) this.mesh.visible = false;
+        if (this.regen > 0 && this.t > this.regen) { this.state = 'rising'; this.t = 0; this.mesh.visible = true; this.mesh.rotation.set(0, 0, 0); }
+        break;
+      case 'rising': {
+        const k = Math.min(1, this.t / 0.6);
+        this.mesh.position.copy(this.home);
+        this.mesh.position.y -= (1 - easeInOut(k)) * 2.5;
+        if (k >= 1) {
+          const pl = this.game.player.solid;
+          if (!boxOverlap(this.solid.min, this.solid.max, pl.min, pl.max)) { this.state = 'idle'; this.solid.enabled = true; }
+        }
+        break;
+      }
+      default: break;
+    }
+    if (this.topMat && this.topMat.emissive) {
+      this.glow = damp(this.glow, this.lit ? 1 : 0, 6, dt);
+      this.topMat.emissive.setRGB(lerp(1, 0.35, this.glow), lerp(0.62, 1, this.glow), lerp(0.3, 0.6, this.glow));
+      this.topMat.emissiveIntensity = 0.16 + this.glow * 1.1;
+    }
+  }
+}
+
+/* Traps ------------------------------------------------------------------ */
+// Loudness of a trap sound by distance from the player.
+function nearVol(game, pos, range = 16) {
+  const d = game.player.pos.distanceTo(pos);
+  return d >= range ? 0 : 1 - d / range;
+}
+
+// Bronze spikes that rise through a grate in a rhythm.
+class SpikeTrap extends Entity {
+  constructor(level, { x0, z0, x1, z1, y = 0, period = 2.6, up = 1.0, offset = 0, warn = 0.5, height = 0.85, spacing = 0.4 }) {
+    super(level);
+    Object.assign(this, { x0, z0, x1, z1, y, period, upTime: up, offset, warnTime: warn, height });
+    this.h = 0;
+    this.time = 0;
+    this.prev = 'down';
+    this.center = V3((x0 + x1) / 2, y, (z0 + z1) / 2);
+    this.message = 'IMPALED — THE TEMPLE CLAIMS YOU';
+    const T = level.T;
+    const plate = new THREE.Mesh(worldBoxGeo(x0, y - 0.04, z0, x1, y + 0.012, z1, spacing * 4), T.spikePlate);
+    plate.position.set((x0 + x1) / 2, y - 0.014, (z0 + z1) / 2);
+    plate.receiveShadow = true;
+    level.scene.add(plate);
+    const pts = [];
+    for (let i = Math.ceil(x0 / spacing - 0.5); (i + 0.5) * spacing < x1; i++) {
+      for (let j = Math.ceil(z0 / spacing - 0.5); (j + 0.5) * spacing < z1; j++) {
+        const px = (i + 0.5) * spacing, pz = (j + 0.5) * spacing;
+        if (px > x0 + 0.1 && px < x1 - 0.1 && pz > z0 + 0.1 && pz < z1 - 0.1) pts.push([px, pz]);
+      }
+    }
+    const geo = new THREE.ConeGeometry(0.06, height, 6);
+    geo.translate(0, height / 2, 0);
+    this.spikes = new THREE.InstancedMesh(geo, T.bronze, Math.max(1, pts.length));
+    const m = new THREE.Matrix4();
+    pts.forEach(([px, pz], i) => { m.makeTranslation(px, 0, pz); this.spikes.setMatrixAt(i, m); });
+    this.spikes.castShadow = true;
+    this.spikes.frustumCulled = false;
+    this.spikes.position.y = y - height - 0.03;
+    level.scene.add(this.spikes);
+    level.hazards.push(this);
+  }
+  update(dt) {
+    this.time += dt;
+    const P = this.period, c = (((this.time + this.offset) % P) + P) % P;
+    const downEnd = P - this.upTime - this.warnTime;
+    const target = c < downEnd ? 0 : c < downEnd + this.warnTime ? 0.13 : 1;
+    const state = target === 1 ? 'up' : target > 0 ? 'warn' : 'down';
+    if (state !== this.prev) {
+      const v = nearVol(this.game, this.center);
+      if (v > 0 && state === 'warn') this.game.audio.trapClick(v);
+      if (v > 0 && state === 'up') this.game.audio.spikes(v);
+      this.prev = state;
+    }
+    this.h = target > this.h ? Math.min(target, this.h + dt * 14) : Math.max(target, this.h - dt * 3);
+    this.spikes.position.y = this.y - this.height - 0.03 + this.h * this.height;
+  }
+  hits(mn, mx) {
+    if (this.h < 0.4) return false;
+    const top = this.y + this.h * this.height - 0.05;
+    return mx.x > this.x0 + 0.08 && mn.x < this.x1 - 0.08 && mx.z > this.z0 + 0.08 && mn.z < this.z1 - 0.08 && mn.y < top && mx.y > this.y;
+  }
+}
+
+// A wall that fires a volley of darts across a corridor lane.
+class DartTrap extends Entity {
+  constructor(level, { origin, dir, length, heights = [0.45, 0.95, 1.45], spread = 0.3, period = 3, offset = 0, warn = 0.8, speed = 16 }) {
+    super(level);
+    this.dir = dir.clone().normalize();
+    this.side = V3(this.dir.z, 0, -this.dir.x);
+    this.length = length;
+    this.period = period;
+    this.offset = offset;
+    this.warnTime = warn;
+    this.speed = speed;
+    this.time = 0;
+    this.lastCycle = null;
+    this.hit = false;
+    this.message = 'STRUCK BY A POISON DART';
+    this.center = origin.clone().addScaledVector(this.dir, length / 2).setY(1);
+    const T = level.T;
+    // Carved plaque with dart holes.
+    const g = new THREE.Group();
+    g.position.copy(origin);
+    level.orientPlane(g, this.dir, Y_UP);
+    const plaque = new THREE.Mesh(new THREE.BoxGeometry(spread * 2 + 0.7, 1.75, 0.1), T.carved);
+    plaque.position.set(0, 0.95, 0.05);
+    plaque.receiveShadow = true;
+    const skull = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.5), level.own(new THREE.MeshStandardMaterial({ map: this.game.tex.glyphTex('skull', '#2a1a0c'), transparent: true, roughness: 0.9 })));
+    skull.position.set(0, 1.92, 0.02);
+    const skullBack = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.6, 0.08), T.stone);
+    skullBack.position.set(0, 1.92, -0.03);
+    this.holeMat = level.own(new THREE.MeshBasicMaterial({ color: 0x050302 }));
+    g.add(plaque, skullBack, skull);
+    this.holes = [];
+    for (const h of heights) {
+      for (const s of [-spread, spread]) {
+        const hole = new THREE.Mesh(new THREE.CircleGeometry(0.06, 12), this.holeMat);
+        hole.position.set(s, h, 0.105);
+        g.add(hole);
+        this.holes.push(origin.clone().addScaledVector(this.side, -s).setY(origin.y + h).addScaledVector(this.dir, 0.12));
+      }
+    }
+    level.scene.add(g);
+    // Dart pool.
+    const dg = new THREE.CylinderGeometry(0.012, 0.012, 0.32, 5);
+    dg.rotateX(Math.PI / 2);
+    this.darts = this.holes.map(() => {
+      const m = new THREE.Mesh(dg, T.bronze);
+      const fl = new THREE.Mesh(new THREE.ConeGeometry(0.035, 0.08, 4), T.red);
+      fl.rotation.x = -Math.PI / 2;
+      fl.position.z = -0.17;
+      m.add(fl);
+      m.visible = false;
+      m.quaternion.setFromUnitVectors(V3(0, 0, 1), this.dir);
+      level.scene.add(m);
+      return { m, pos: V3(), live: false, dist: 0 };
+    });
+    level.hazards.push(this);
+    this._p = V3();
+  }
+  update(dt) {
+    this.time += dt;
+    const P = this.period, tt = this.time + this.offset;
+    const c = ((tt % P) + P) % P;
+    const warm = c > P - this.warnTime ? (c - (P - this.warnTime)) / this.warnTime : 0;
+    this.holeMat.color.setRGB(0.02 + warm * 2.4, 0.01 + warm * 0.25, 0.005);
+    const cycle = Math.floor(tt / P);
+    if (this.lastCycle !== null && cycle !== this.lastCycle) {
+      this.darts.forEach((d, i) => { d.live = true; d.dist = 0; d.pos.copy(this.holes[i]); d.m.visible = true; });
+      const v = nearVol(this.game, this.center, 14);
+      if (v > 0) this.game.audio.dart(v);
+    } else if (this.lastCycle !== null && warm > 0 && this.prevWarm === 0) {
+      const v = nearVol(this.game, this.center, 12);
+      if (v > 0) this.game.audio.trapClick(v * 0.8);
+    }
+    this.prevWarm = warm;
+    this.lastCycle = cycle;
+    const pl = this.game.player;
+    boxFrom(pl.pos, pl.half, _hzMin, _hzMax);
+    for (const d of this.darts) {
+      if (!d.live) continue;
+      const step = this.speed * dt;
+      if (rayBox(d.pos, this.dir, _hzMin, _hzMax) <= step) this.hit = true;
+      d.pos.addScaledVector(this.dir, step);
+      d.dist += step;
+      if (d.dist > this.length - 0.1) { d.live = false; d.m.visible = false; }
+      d.m.position.copy(d.pos);
+    }
+  }
+  hits() {
+    const h = this.hit;
+    this.hit = false;
+    return h;
+  }
+}
+
+// A crescent blade on a long arm, swinging from the ceiling.
+// axis 'z': it sweeps across X; axis 'x': it sweeps along Z.
+class Pendulum extends Entity {
+  constructor(level, { pivot, axis = 'z', length = 5, amp = 1.0, period = 2.8, phase = 0 }) {
+    super(level);
+    this.axis = axis;
+    this.amp = amp;
+    this.period = period;
+    this.phase = phase;
+    this.time = 0;
+    this.length = length;
+    this.message = 'CUT DOWN BY A SWINGING BLADE';
+    this.pivot = pivot.clone();
+    const T = level.T;
+    this.group = new THREE.Group();
+    this.group.position.copy(pivot);
+    this.arm = new THREE.Group();
+    this.group.add(this.arm);
+    const rodLen = length - 0.3;
+    const rod = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, rodLen, 8), T.bronze);
+    rod.position.y = -rodLen / 2;
+    const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.14, 12), T.bronze);
+    hub.rotation.x = Math.PI / 2;
+    hub.position.y = -rodLen;
+    const R1 = 1.0, R2 = 0.78, a0 = -Math.PI / 2 - 0.95, a1 = -Math.PI / 2 + 0.95;
+    const sh = new THREE.Shape();
+    sh.moveTo(Math.cos(a0) * R1, Math.sin(a0) * R1);
+    sh.absarc(0, 0, R1, a0, a1, false);
+    sh.absarc(0, 0.28, R2, a1 + 0.12, a0 - 0.12, true);
+    sh.closePath();
+    const bg = new THREE.ExtrudeGeometry(sh, { depth: 0.05, bevelEnabled: true, bevelThickness: 0.015, bevelSize: 0.03, bevelSegments: 1, curveSegments: 24 });
+    bg.translate(0, 0, -0.025);
+    const blade = new THREE.Mesh(bg, T.blade);
+    blade.position.y = -rodLen;
+    if (axis === 'x') blade.rotation.y = Math.PI / 2;
+    for (const m of [rod, hub, blade]) { m.castShadow = true; this.arm.add(m); }
+    level.scene.add(this.group);
+    // Sample points along the cutting edge (local to the arm).
+    this.samples = [];
+    for (let i = 0; i <= 8; i++) {
+      const a = lerp(a0 + 0.1, a1 - 0.1, i / 8);
+      for (const r of [R1 - 0.03, (R1 + R2) / 2 - 0.05]) {
+        const lx = Math.cos(a) * r, ly = Math.sin(a) * r - rodLen;
+        this.samples.push(axis === 'x' ? V3(0, ly, -lx) : V3(lx, ly, 0));
+      }
+    }
+    this._w = V3();
+    this.lastSign = 0;
+    level.hazards.push(this);
+    this.update(0);
+  }
+  update(dt) {
+    this.time += dt;
+    const th = this.amp * Math.sin((this.time / this.period) * TAU + this.phase);
+    this.arm.rotation.set(0, 0, 0);
+    this.arm.rotation[this.axis] = th;
+    this.arm.updateMatrixWorld(true);
+    const sg = Math.sign(th);
+    if (sg !== this.lastSign && this.lastSign !== 0) {
+      const v = nearVol(this.game, this.pivot.clone().setY(1), 12);
+      if (v > 0) this.game.audio.whoosh(v);
+    }
+    this.lastSign = sg;
+  }
+  hits(mn, mx) {
+    const m = this.arm.matrixWorld;
+    for (const s of this.samples) {
+      const p = this._w.copy(s).applyMatrix4(m);
+      if (p.x > mn.x - 0.04 && p.x < mx.x + 0.04 && p.y > mn.y && p.y < mx.y + 0.04 && p.z > mn.z - 0.04 && p.z < mx.z + 0.04) return true;
+    }
+    return false;
+  }
+}
+
+// A vent in the floor that roars into a column of fire.
+class FlameJet extends Entity {
+  constructor(level, { pos, period = 4, on = 1.3, offset = 0, warn = 0.6, height = 2.8, radius = 1.1 }) {
+    super(level);
+    Object.assign(this, { period, onTime: on, offset, warnTime: warn, height, radius });
+    this.pos = pos.clone();
+    this.time = 0;
+    this.k = 0;
+    this.prev = 'off';
+    this.message = 'CONSUMED BY THE FIRE';
+    const T = level.T;
+    const grate = new THREE.Mesh(new THREE.CylinderGeometry(radius * 0.7, radius * 0.7, 0.03, 16), T.void);
+    grate.position.set(pos.x, pos.y + 0.012, pos.z);
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(radius * 0.72, 0.06, 6, 24), T.bronze);
+    ring.rotation.x = Math.PI / 2;
+    ring.position.set(pos.x, pos.y + 0.03, pos.z);
+    this.glowMat = level.own(new THREE.MeshBasicMaterial({ color: 0x000000 }));
+    const glow = new THREE.Mesh(new THREE.CircleGeometry(radius * 0.5, 16), this.glowMat);
+    glow.rotation.x = -Math.PI / 2;
+    glow.position.set(pos.x, pos.y + 0.03, pos.z);
+    level.scene.add(grate, ring, glow);
+    this.fire = new THREE.Group();
+    this.fire.position.copy(pos);
+    this.planes = [];
+    for (let i = 0; i < 3; i++) {
+      const p = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), i === 1 ? T.jetInner : T.jetOuter);
+      p.geometry.translate(0, 0.5, 0);
+      this.fire.add(p);
+      this.planes.push({ p, ph: rand(0, 10), w: i === 1 ? 0.65 : 1.1, h: i < 2 ? 1 : 0.7 });
+    }
+    this.fire.visible = false;
+    level.scene.add(this.fire);
+    level.hazards.push(this);
+  }
+  update(dt) {
+    this.time += dt;
+    const P = this.period, c = (((this.time + this.offset) % P) + P) % P;
+    const active = c < this.onTime, warm = c > P - this.warnTime;
+    const target = active ? 1 : warm ? 0.12 : 0;
+    const state = active ? 'on' : 'off';
+    if (state !== this.prev) {
+      if (state === 'on') { const v = nearVol(this.game, this.pos, 18); if (v > 0) this.game.audio.fire(v); }
+      this.prev = state;
+    }
+    this.k = target > this.k ? Math.min(target, this.k + dt * 9) : Math.max(target, this.k - dt * 4);
+    this.glowMat.color.setRGB(1.3 * (this.k + (warm ? 0.35 : 0)), 0.45 * (this.k + (warm ? 0.25 : 0)), 0.02 + 0.04 * this.k);
+    this.fire.visible = this.k > 0.01;
+    if (this.fire.visible) {
+      const cam = this.game.camera.position;
+      this.fire.rotation.y = Math.atan2(cam.x - this.pos.x, cam.z - this.pos.z);
+      const t = this.time;
+      this.planes.forEach((pl, i) => {
+        const fl = 1 + Math.sin(t * 17 + pl.ph) * 0.08 + Math.sin(t * 9 + pl.ph * 2) * 0.06;
+        pl.p.scale.set(this.radius * 2 * pl.w * (0.6 + this.k * 0.4), this.height * pl.h * this.k * fl, 1);
+        pl.p.position.z = i * 0.01;
+      });
+    }
+  }
+  hits(mn, mx) {
+    if (this.k < 0.6) return false;
+    const r = this.radius * 0.92, p = this.pos;
+    return mx.x > p.x - r && mn.x < p.x + r && mx.z > p.z - r && mn.z < p.z + r && mn.y < p.y + this.height * this.k && mx.y > p.y;
+  }
+}
+
+// A static region that kills: pits, water, crushers.
+class KillZone extends Entity {
+  constructor(level, { min, max, message = 'THE TEMPLE CLAIMS YOU' }) {
+    super(level);
+    this.min = min.clone();
+    this.max = max.clone();
+    this.message = message;
+    this.enabled = true;
+    level.hazards.push(this);
+  }
+  hits(mn, mx) { return this.enabled && boxOverlap(mn, mx, this.min, this.max, 0); }
+}
+
+/* Sun mirrors, prisms and receivers --------------------------------------
+   Light travels along the grid axes in the horizontal plane. A mirror's
+   polished face points along a diagonal; light that strikes the face turns
+   90°, light that strikes the stone back stops. A prism splits light both
+   ways. Receivers are jade eyes that wake when light reaches them. */
+const MIRROR_NORMALS = [V3(1, 0, 1), V3(1, 0, -1), V3(-1, 0, -1), V3(-1, 0, 1)].map((v) => v.normalize());
+
+class BeamNetwork extends Entity {
+  constructor(level, { color = 0xffdc9a } = {}) {
+    super(level);
+    this.sources = [];
+    this.elements = [];
+    this.pool = [];
+    this.flares = [];
+    this.nSeg = 0;
+    this.nFlare = 0;
+    this.coreMat = neon(color, 3.4);
+    this.glowMat = level.own(new THREE.MeshBasicMaterial({ color: new THREE.Color(color).multiplyScalar(1.1), transparent: true, opacity: 0.3, depthWrite: false, blending: THREE.AdditiveBlending }));
+    this.flareMat = level.own(new THREE.MeshBasicMaterial({ map: this.game.tex.glowSprite(), color: new THREE.Color(color).multiplyScalar(1.6), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+    this.coreGeo = new THREE.CylinderGeometry(0.035, 0.035, 1, 6, 1, true);
+    this.glowGeo = new THREE.CylinderGeometry(0.13, 0.13, 1, 10, 1, true);
+    this.flareGeo = new THREE.PlaneGeometry(1, 1);
+    this.ignore = (s) => s.tag === 'player' || s.tag === 'object' || s.owner instanceof SunMirror || s.owner instanceof BeamPrism || s.owner instanceof BeamReceiver;
+  }
+  addSource(pos, dir) { this.sources.push({ pos: pos.clone(), dir: dir.clone().normalize() }); }
+  add(e) { this.elements.push(e); return e; }
+  segMesh(i) {
+    while (this.pool.length <= i) {
+      const core = new THREE.Mesh(this.coreGeo, this.coreMat);
+      const glow = new THREE.Mesh(this.glowGeo, this.glowMat);
+      core.frustumCulled = glow.frustumCulled = false;
+      this.level.scene.add(core, glow);
+      this.pool.push({ core, glow });
+    }
+    return this.pool[i];
+  }
+  flareMesh(i) {
+    while (this.flares.length <= i) {
+      const f = new THREE.Mesh(this.flareGeo, this.flareMat);
+      this.level.scene.add(f);
+      this.flares.push(f);
+    }
+    return this.flares[i];
+  }
+  draw(p, d, len, wall) {
+    if (len < 0.01) return;
+    const s = this.segMesh(this.nSeg++);
+    for (const m of [s.core, s.glow]) {
+      m.visible = true;
+      m.position.copy(p).addScaledVector(d, len / 2);
+      m.quaternion.setFromUnitVectors(Y_UP, d);
+      m.scale.set(1, len, 1);
+    }
+    const f = this.flareMesh(this.nFlare++);
+    f.visible = true;
+    f.position.copy(p).addScaledVector(d, len - (wall ? 0.06 : 0));
+    f.quaternion.copy(this.game.camera.quaternion);
+    f.scale.setScalar(wall ? 0.55 : 0.95);
+  }
+  walk(p, d, depth) {
+    if (depth > 14 || this.nSeg > 48) return;
+    let best = Infinity, hit = null;
+    for (const e of this.elements) {
+      const c = e.center;
+      const vx = c.x - p.x, vy = c.y - p.y, vz = c.z - p.z;
+      const t = vx * d.x + vy * d.y + vz * d.z;
+      if (t < 0.05 || t >= best) continue;
+      const px = vx - d.x * t, py = vy - d.y * t, pz = vz - d.z * t;
+      if (px * px + py * py + pz * pz < e.catchR * e.catchR) { best = t; hit = e; }
+    }
+    const ray = this.level.world.raycast(p, d, 140, this.ignore);
+    if (ray.dist < best) { this.draw(p, d, ray.dist, true); return; }
+    this.draw(p, d, best, false);
+    const hp = V3().copy(p).addScaledVector(d, best);
+    if (hit.kind === 'mirror') {
+      if (hit.busy > 0) return;
+      const n = hit.normal, dn = d.dot(n);
+      if (dn > -0.01) return;
+      this.walk(hp, snapAxis(V3().copy(d).addScaledVector(n, -2 * dn)), depth + 1);
+    } else if (hit.kind === 'prism') {
+      this.walk(hp, V3(d.z, 0, -d.x), depth + 1);
+      this.walk(hp, V3(-d.z, 0, d.x), depth + 1);
+    } else if (hit.kind === 'receiver') {
+      hit.hitNow = true;
+    }
+  }
+  update() {
+    for (const e of this.elements) if (e.kind === 'receiver') e.hitNow = false;
+    this.nSeg = 0;
+    this.nFlare = 0;
+    for (const s of this.sources) this.walk(s.pos, s.dir, 0);
+    for (let i = this.nSeg; i < this.pool.length; i++) this.pool[i].core.visible = this.pool[i].glow.visible = false;
+    for (let i = this.nFlare; i < this.flares.length; i++) this.flares[i].visible = false;
+    for (const e of this.elements) if (e.kind === 'receiver') e.setLit(e.hitNow);
+  }
+}
+
+class SunMirror extends Entity {
+  constructor(level, net, { pos, state = 0, fixed = false, carrier = null, height = 1.35 }) {
+    super(level);
+    this.kind = 'mirror';
+    this.catchR = 0.32;
+    this.state = state;
+    this.fixed = fixed;
+    this.carrier = carrier;
+    this.height = height;
+    this.busy = 0;
+    this.range = 3.3;
+    this.rot = this.targetRot = (Math.PI / 4) * (1 + 2 * state);
+    this._c = V3();
+    const T = level.T;
+    this.group = new THREE.Group();
+    this.group.position.copy(pos);
+    if (!carrier) {
+      const ph = height - 0.42;
+      const ped = new THREE.Mesh(new THREE.BoxGeometry(0.56, ph, 0.56), T.stone);
+      ped.position.y = ph / 2;
+      const band = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.18, 0.6), T.red);
+      band.position.y = ph * 0.7;
+      const cap = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.1, 0.72), T.carved);
+      cap.position.y = ph + 0.05;
+      for (const m of [ped, band, cap]) { m.castShadow = true; m.receiveShadow = true; this.group.add(m); }
+      level.world.addBox(pos.x - 0.36, pos.y, pos.z - 0.36, pos.x + 0.36, pos.y + ph + 0.1, pos.z + 0.36, this, 'mirror');
+    } else {
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.09, height - 0.3, 8), T.bronze);
+      post.position.y = (height - 0.3) / 2;
+      this.group.add(post);
+    }
+    this.holder = new THREE.Group();
+    this.holder.position.y = height;
+    this.holder.rotation.y = this.rot;
+    const yoke = new THREE.Mesh(new THREE.TorusGeometry(0.43, 0.035, 6, 24, Math.PI), T.bronze);
+    yoke.rotation.z = Math.PI;
+    const front = new THREE.Mesh(new THREE.CircleGeometry(0.36, 32), fixed ? T.gold : T.mirror);
+    front.position.z = 0.03;
+    const back = new THREE.Mesh(new THREE.CircleGeometry(0.36, 32), T.dark);
+    back.rotation.y = Math.PI;
+    back.position.z = -0.03;
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(0.37, 0.045, 8, 32), T.gold);
+    const sun = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.5), level.own(new THREE.MeshBasicMaterial({ map: this.game.tex.glyphTex('sun', '#ffffff'), transparent: true, depthWrite: false, opacity: 0.35, blending: THREE.AdditiveBlending, color: 0xffd090 })));
+    sun.position.z = 0.036;
+    for (const m of [yoke, front, back, rim]) m.castShadow = true;
+    this.holder.add(yoke, front, back, rim, sun);
+    this.group.add(this.holder);
+    level.scene.add(this.group);
+    for (const m of [front, back, rim]) level.addPick(m, this);
+    net.add(this);
+  }
+  get normal() { return MIRROR_NORMALS[this.state]; }
+  get center() {
+    if (this.carrier) this.group.position.set(this.carrier.pos.x, this.carrier.pos.y + this.carrier.half.y, this.carrier.pos.z);
+    return this._c.copy(this.group.position).setY(this.group.position.y + this.height);
+  }
+  prompt() {
+    if (this.fixed) return { text: 'Set in stone — it will not turn', far: true };
+    if (this.busy > 0) return null;
+    return { text: 'Turn the mirror' };
+  }
+  interact(game) {
+    if (this.fixed || this.busy > 0) { game.audio.deny(); return; }
+    this.state = (this.state + 1) % 4;
+    this.targetRot += Math.PI / 2;
+    this.busy = 0.45;
+    game.audio.stoneGrind(0.35, 0.6);
+    game.audio.trapClick(0.6);
+  }
+  update(dt) {
+    this.busy = Math.max(0, this.busy - dt);
+    this.rot = this.busy > 0 ? lerp(this.targetRot - Math.PI / 2, this.targetRot, easeInOut(1 - this.busy / 0.45)) : this.targetRot;
+    this.holder.rotation.y = this.rot;
+    if (this.carrier) void this.center;
+  }
+}
+
+class BeamPrism extends Entity {
+  constructor(level, net, { pos, height = 1.35 }) {
+    super(level);
+    this.kind = 'prism';
+    this.catchR = 0.34;
+    this.c = pos.clone().setY(pos.y + height);
+    const T = level.T;
+    const ph = height - 0.45;
+    const ped = new THREE.Mesh(new THREE.BoxGeometry(0.6, ph, 0.6), T.carved);
+    ped.position.set(pos.x, pos.y + ph / 2, pos.z);
+    ped.castShadow = true;
+    ped.receiveShadow = true;
+    this.crystalMat = level.own(new THREE.MeshStandardMaterial({ color: 0x7affc8, roughness: 0.05, metalness: 0.2, emissive: 0x2affa0, emissiveIntensity: 0.6, transparent: true, opacity: 0.85, flatShading: true }));
+    this.crystal = new THREE.Mesh(new THREE.OctahedronGeometry(0.3, 0), this.crystalMat);
+    this.crystal.position.copy(this.c);
+    this.crystal.scale.set(1, 1.4, 1);
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.34, 0.04, 8, 24), T.gold);
+    ring.rotation.x = Math.PI / 2;
+    ring.position.set(pos.x, pos.y + ph + 0.02, pos.z);
+    level.scene.add(ped, this.crystal, ring);
+    level.world.addBox(pos.x - 0.3, pos.y, pos.z - 0.3, pos.x + 0.3, pos.y + ph, pos.z + 0.3, this, 'prism');
+    net.add(this);
+  }
+  get center() { return this.c; }
+  update(dt) { this.crystal.rotation.y += dt * 0.8; }
+}
+
+class BeamReceiver extends Entity {
+  constructor(level, net, { pos, onChange = null, radius = 0.26 }) {
+    super(level);
+    this.kind = 'receiver';
+    this.catchR = 0.45;
+    this.c = pos.clone();
+    this.lit = false;
+    this.hitNow = false;
+    this.glow = 0;
+    this.onChange = onChange;
+    this.mat = level.own(new THREE.MeshStandardMaterial({ color: 0x2fae74, roughness: 0.15, metalness: 0.1, emissive: 0x3dff9a, emissiveIntensity: 0.25 }));
+    this.orb = new THREE.Mesh(new THREE.SphereGeometry(radius, 24, 16), this.mat);
+    this.orb.position.copy(pos);
+    this.haloMat = level.own(new THREE.MeshBasicMaterial({ map: this.game.tex.glowSprite(), color: new THREE.Color(0x5dffb0), transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending }));
+    this.halo = new THREE.Mesh(new THREE.PlaneGeometry(radius * 7, radius * 7), this.haloMat);
+    this.halo.position.copy(pos);
+    level.scene.add(this.orb, this.halo);
+    net.add(this);
+  }
+  get center() { return this.c; }
+  setLit(on) {
+    if (on === this.lit) return;
+    this.lit = on;
+    if (on) { this.game.audio.chime(); this.game.flash(0x5dffb0, 0.15); }
+    if (this.onChange) this.onChange(on, this);
+  }
+  update(dt) {
+    this.glow = damp(this.glow, this.lit ? 1 : 0, 5, dt);
+    this.mat.emissiveIntensity = 0.25 + this.glow * 3;
+    this.haloMat.opacity = this.glow * 0.9;
+    this.halo.quaternion.copy(this.game.camera.quaternion);
+  }
+}
+
+/* A great stone ball that rolls down a corridor ------------------------- */
+class Boulder extends Entity {
+  constructor(level, { start, endZ, radius = 1.5, floorY, accel = 3, vmax = 7, onCrash = null }) {
+    super(level);
+    this.start = start.clone();
+    this.endZ = endZ;
+    this.radius = radius;
+    this.floorY = floorY;
+    this.accel = accel;
+    this.vmax = vmax;
+    this.onCrash = onCrash;
+    this.state = 'idle';
+    this.v = 0;
+    this.t = 0;
+    this.rumbleT = 0;
+    this.message = 'CRUSHED BY THE ROLLING STONE';
+    const geo = new THREE.IcosahedronGeometry(radius, 3);
+    const p = geo.attributes.position;
+    const rnd = mulberry32(17);
+    for (let i = 0; i < p.count; i++) {
+      _v1.fromBufferAttribute(p, i);
+      const k = 1 + (Math.sin(_v1.x * 3.1) * Math.sin(_v1.y * 2.7) * Math.sin(_v1.z * 3.3)) * 0.05 + (rnd() - 0.5) * 0.015;
+      _v1.multiplyScalar(k);
+      p.setXYZ(i, _v1.x, _v1.y, _v1.z);
+    }
+    geo.computeVertexNormals();
+    this.mesh = new THREE.Mesh(geo, level.T.carved);
+    this.mesh.castShadow = true;
+    this.mesh.position.copy(start);
+    this.mesh.visible = false;
+    level.scene.add(this.mesh);
+    level.hazards.push(this);
+  }
+  release() {
+    if (this.state !== 'idle') return;
+    this.state = 'drop';
+    this.t = 0;
+    this.mesh.visible = true;
+  }
+  update(dt) {
+    if (this.state === 'idle' || this.state === 'done') return;
+    this.t += dt;
+    const m = this.mesh;
+    const ground = this.floorY(m.position.z) + this.radius;
+    if (this.state === 'drop') {
+      m.position.y = Math.max(ground, this.start.y - 0.5 * GRAVITY * this.t * this.t);
+      if (m.position.y <= ground) {
+        this.state = 'roll';
+        this.game.audio.thump(1.6);
+        this.game.player.shake = 0.6;
+      }
+      return;
+    }
+    this.v = Math.min(this.vmax, this.v + this.accel * dt);
+    m.position.z -= this.v * dt;
+    m.position.y = ground;
+    m.rotation.x -= (this.v * dt) / this.radius;
+    this.rumbleT -= dt;
+    if (this.rumbleT <= 0) {
+      this.rumbleT = 0.9;
+      const v = nearVol(this.game, m.position, 30);
+      if (v > 0) this.game.audio.rumble(1.0);
+      this.game.player.shake = Math.max(this.game.player.shake, 0.25 * v);
+    }
+    if (m.position.z <= this.endZ) {
+      m.position.z = this.endZ;
+      this.state = 'done';
+      this.game.audio.thump(2);
+      this.game.audio.crumble(1.5);
+      this.game.player.shake = 1;
+      if (this.onCrash) this.onCrash();
+    }
+  }
+  hits(mn, mx) {
+    if (this.state !== 'roll' && this.state !== 'drop') return false;
+    const c = this.mesh.position;
+    const dx = Math.max(mn.x - c.x, 0, c.x - mx.x);
+    const dy = Math.max(mn.y - c.y, 0, c.y - mx.y);
+    const dz = Math.max(mn.z - c.z, 0, c.z - mx.z);
+    return dx * dx + dy * dy + dz * dz < (this.radius * 0.92) ** 2;
+  }
+}
+
+/* A stone step that rises out of the floor on cue ------------------------ */
+class RisingBlock extends Entity {
+  constructor(level, { min, max, mat, depth = 3 }) {
+    super(level);
+    this.min = min.clone();
+    this.max = max.clone();
+    this.depth = depth;
+    this.state = 'down';
+    this.t = 0;
+    this.k = 0;
+    const size = V3().subVectors(max, min);
+    this.center = V3().addVectors(min, max).multiplyScalar(0.5);
+    this.mesh = new THREE.Mesh(new THREE.BoxGeometry(size.x, size.y, size.z), mat);
+    this.mesh.castShadow = true;
+    this.mesh.receiveShadow = true;
+    this.mesh.visible = false;
+    this.mesh.position.copy(this.center).setY(this.center.y - depth);
+    level.scene.add(this.mesh);
+    this.solid = level.world.add(V3(), V3(), this, 'rise');
+    this.solid.kinematic = true;
+    this.solid.enabled = false;
+  }
+  rise(delay = 0, snap = false) {
+    if (snap) { this.state = 'up'; this.k = 1; this.apply(0); this.mesh.visible = true; this.solid.enabled = true; return; }
+    this.state = 'rising';
+    this.t = -delay;
+  }
+  apply(prevK) {
+    const off = -this.depth * (1 - this.k);
+    this.mesh.position.copy(this.center).setY(this.center.y + off);
+    this.solid.min.copy(this.min).setY(this.min.y + off);
+    this.solid.max.copy(this.max).setY(this.max.y + off);
+    this.solid.delta.set(0, this.depth * (this.k - prevK), 0);
+  }
+  update(dt) {
+    if (this.state !== 'rising') { this.solid.delta.set(0, 0, 0); return; }
+    this.t += dt;
+    if (this.t < 0) return;
+    if (!this.mesh.visible) {
+      this.mesh.visible = true;
+      this.solid.enabled = true;
+      if (nearVol(this.game, this.center, 30) > 0) this.game.audio.stoneGrind(1.0, 0.7);
+    }
+    const prev = this.k;
+    this.k = easeInOut(Math.min(1, this.t / 1.1));
+    this.apply(prev);
+    // Never trap the player inside a rising step: lift or push them clear.
+    const pl = this.game.player;
+    if (boxOverlap(this.solid.min, this.solid.max, pl.solid.min, pl.solid.max)) {
+      depenetrate(pl.pos, pl.half, this.level.world, (s) => s.owner === pl);
+      pl.syncSolid();
+    }
+    if (this.t >= 1.1) { this.state = 'up'; this.solid.delta.set(0, 0, 0); }
+  }
+}
+
+/* Sky dome and water shaders for the temple levels. */
+const SKY_VERT = /* glsl */`
+varying vec3 vDir;
+void main() {
+  vDir = normalize(position);
+  vec4 p = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  gl_Position = p.xyww;
+}`;
+const SKY_FRAG = /* glsl */`
+uniform vec3 uTop; uniform vec3 uHorizon; uniform vec3 uGlow; uniform vec3 uMoon; uniform vec3 uMoonCol;
+uniform float uTime; uniform float uStars; uniform float uMoonSize;
+varying vec3 vDir;
+float hash(vec3 p) { return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
+void main() {
+  vec3 d = normalize(vDir);
+  float h = d.y;
+  vec3 col = mix(uHorizon, uTop, pow(clamp(h, 0.0, 1.0), 0.5));
+  col = mix(col, uHorizon * 0.5, smoothstep(0.0, -0.3, h));
+  float m = max(dot(d, uMoon), 0.0);
+  col += uGlow * (pow(m, 6.0) * 0.35 + pow(m, 60.0) * 0.8);
+  col += uMoonCol * smoothstep(1.0 - uMoonSize, 1.0 - uMoonSize * 0.75, m);
+  vec3 q = floor(d * 360.0);
+  float s = hash(q);
+  float star = step(0.9966, s) * smoothstep(0.03, 0.35, h) * uStars;
+  star *= 0.55 + 0.45 * sin(uTime * (1.0 + s * 3.0) + s * 60.0);
+  col += vec3(0.85, 0.9, 1.0) * star * (0.5 + 1.5 * fract(s * 91.0));
+  // A faint band of the Milky Way.
+  float band = exp(-pow(dot(d, normalize(vec3(0.5, 0.35, 0.8))) * 5.0, 2.0)) * smoothstep(0.0, 0.4, h);
+  col += vec3(0.12, 0.13, 0.2) * band * uStars * (0.6 + 0.4 * hash(floor(d * 60.0)));
+  gl_FragColor = vec4(col, 1.0);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}`;
+const WATER_VERT = /* glsl */`
+varying vec3 vW;
+void main() {
+  vec4 w = modelMatrix * vec4(position, 1.0);
+  vW = w.xyz;
+  gl_Position = projectionMatrix * viewMatrix * w;
+}`;
+const WATER_FRAG = /* glsl */`
+uniform float uTime; uniform vec3 uDeep; uniform vec3 uShallow; uniform vec3 uGlint;
+varying vec3 vW;
+void main() {
+  vec2 p = vW.xz;
+  float w = sin(p.x * 1.3 + uTime * 0.9) * 0.5 + sin(p.y * 1.7 - uTime * 0.7) * 0.5 + sin((p.x + p.y) * 2.6 + uTime * 1.4) * 0.3;
+  float c = sin(p.x * 6.0 + sin(p.y * 3.0 + uTime) * 2.0 + uTime * 1.2) * sin(p.y * 7.3 - uTime * 0.8 + sin(p.x * 2.1) * 2.0);
+  float n = fract(sin(dot(floor(p * 3.0), vec2(12.9898, 78.233))) * 43758.5453);
+  vec3 col = mix(uDeep, uShallow, 0.4 + 0.18 * w);
+  col += uGlint * smoothstep(0.86, 1.0, c) * step(0.55, n) * 0.22;
+  vec3 v = normalize(cameraPosition - vW);
+  col += uShallow * pow(1.0 - max(v.y, 0.0), 3.0) * 0.6;
+  gl_FragColor = vec4(col, 0.94);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}`;
+
+/* ---------------------------------------------------------------------
+   TempleLevel: builder helpers shared by levels 6–10. Static stone is
+   batched into one mesh per material to keep draw calls low.
+   --------------------------------------------------------------------- */
+class TempleLevel extends Level {
+  constructor(game, cp = 0, carry = null) {
+    super(game, cp, carry);
+    this.T = templeMaterials(game);
+    this.batching = true;
+    this.batches = new Map();
+    this.flames = [];
+    this.flickers = [];
+    this.waterU = [];
+    this.fol = {};
+    this.rnd = mulberry32(this.constructor.meta.seed || 7);
+  }
+  setAtmosphere(o) {
+    super.setAtmosphere(o);
+    if (!this.game.templeEnv) this.game.templeEnv = buildTempleEnvironment(this.game.renderer);
+    this.scene.environment = this.game.templeEnv;
+  }
+  // ---- batched static geometry --------------------------------------------
+  box(x0, y0, z0, x1, y1, z1, mat, opts = {}) {
+    if (!this.batching || opts.batch === false) return super.box(x0, y0, z0, x1, y1, z1, mat, opts);
+    if (x0 > x1) [x0, x1] = [x1, x0];
+    if (y0 > y1) [y0, y1] = [y1, y0];
+    if (z0 > z1) [z0, z1] = [z1, z0];
+    const g = worldBoxGeo(x0, y0, z0, x1, y1, z1, opts.scale || 4);
+    g.translate((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
+    this.addStatic(g, mat, opts.shadow !== false);
+    if (opts.solid !== false) this.world.addBox(x0, y0, z0, x1, y1, z1, opts.owner || null, opts.tag || 'static');
+    return null;
+  }
+  addStatic(geo, mat, shadow = true) {
+    const key = mat.uuid + (shadow ? 's' : 'n');
+    let b = this.batches.get(key);
+    if (!b) { b = { mat, shadow, geos: [] }; this.batches.set(key, b); }
+    b.geos.push(geo);
+  }
+  flushStatic() {
+    for (const b of this.batches.values()) {
+      const mesh = new THREE.Mesh(mergeGeometries(b.geos), b.mat);
+      mesh.castShadow = b.shadow;
+      mesh.receiveShadow = true;
+      this.scene.add(mesh);
+    }
+    this.batches.clear();
+  }
+  // Invisible collider.
+  block(x0, y0, z0, x1, y1, z1) { this.world.addBox(x0, y0, z0, x1, y1, z1, null, 'static'); }
+  finish() {
+    this.flushStatic();
+    this.finishFoliage();
+    this.refreshRelics();
+  }
+  // ---- offerings ------------------------------------------------------------
+  found(kind) { return (this.carry.found || []).includes(kind); }
+  placed(kind) { return (this.carry.placed || []).includes(kind); }
+  collectRelic(kind) {
+    const c = this.carry;
+    c.found = c.found || [];
+    if (!c.found.includes(kind)) c.found.push(kind);
+    this.game.audio.relic();
+    this.game.flash(RELIC_INFO[kind].hex, 0.3);
+    const kinds = this.relicKinds || [];
+    const n = kinds.filter((k) => c.found.includes(k)).length;
+    this.game.ui.toast(kinds.length > 1 ? `${RELIC_INFO[kind].name.toUpperCase()} · ${n} / ${kinds.length}` : `${RELIC_INFO[kind].name.toUpperCase()} TAKEN`, 'good', 3);
+    this.refreshRelics();
+    this.onRelic(kind);
+  }
+  onRelic() {}
+  refreshRelics() { this.game.ui.setRelics(this.relicKinds, this.carry.found || [], this.carry.placed || []); }
+  // ---- fire -----------------------------------------------------------------
+  flameGeo() {
+    if (!this._flameGeo) {
+      this._flameGeo = new THREE.PlaneGeometry(0.36, 0.66);
+      this._flameGeo.translate(0, 0.28, 0);
+    }
+    return this._flameGeo;
+  }
+  flame(pos, scale = 1, { light = false, intensity = 10, distance = 9, color = 0xff9a48 } = {}) {
+    const g = new THREE.Group();
+    g.position.copy(pos);
+    const outer = new THREE.Mesh(this.flameGeo(), this.T.flameOuter);
+    const inner = new THREE.Mesh(this.flameGeo(), this.T.flameInner);
+    inner.position.z = 0.01;
+    const halo = new THREE.Mesh(this.flameGeo(), this.haloMat || (this.haloMat = this.own(new THREE.MeshBasicMaterial({ map: this.game.tex.glowSprite(), color: new THREE.Color(0.5, 0.22, 0.06), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }))));
+    halo.scale.set(3.2, 1.7, 1);
+    halo.position.set(0, -0.12, -0.01);
+    g.add(halo, outer, inner);
+    g.scale.setScalar(scale);
+    this.scene.add(g);
+    this.flames.push({ g, outer, inner, ph: rand(0, 10) });
+    if (light) {
+      const l = this.point(pos.x, pos.y + 0.35 * scale, pos.z, color, intensity, distance);
+      this.flickers.push({ l, base: intensity, ph: rand(0, 10) });
+    }
+  }
+  // Torch in a bronze cup on a bracket, mounted on a wall facing `normal`.
+  torch(pos, normal, opts = {}) {
+    const T = this.T;
+    const n = normal.clone().normalize();
+    const b = pos.clone().addScaledVector(n, 0.34);
+    const lo = V3().copy(pos).min(b), hi = V3().copy(pos).max(b);
+    const e = 0.05;
+    this.box(lo.x - (n.x ? 0 : e), pos.y - 0.06, lo.z - (n.z ? 0 : e), hi.x + (n.x ? 0 : e), pos.y + 0.03, hi.z + (n.z ? 0 : e), T.bronze, { solid: false });
+    const cup = new THREE.CylinderGeometry(0.13, 0.07, 0.18, 10);
+    cup.translate(b.x, pos.y + 0.06, b.z);
+    this.addStatic(cup, T.bronze);
+    const coal = new THREE.CylinderGeometry(0.11, 0.11, 0.02, 10);
+    coal.translate(b.x, pos.y + 0.15, b.z);
+    this.addStatic(coal, T.coals, false);
+    this.flame(V3(b.x, pos.y + 0.13, b.z), opts.scale || 0.95, { light: opts.light !== false, intensity: opts.intensity || 9, distance: opts.distance || 9, color: opts.color });
+  }
+  // Standing stone brazier.
+  brazier(x, y, z, { light = true, scale = 1, intensity = 14, distance = 12, color } = {}) {
+    const T = this.T, s = scale;
+    this.box(x - 0.34 * s, y, z - 0.34 * s, x + 0.34 * s, y + 0.9 * s, z + 0.34 * s, T.carved);
+    this.box(x - 0.44 * s, y, z - 0.44 * s, x + 0.44 * s, y + 0.12 * s, z + 0.44 * s, T.dark);
+    const bowl = new THREE.CylinderGeometry(0.52 * s, 0.32 * s, 0.34 * s, 14);
+    bowl.translate(x, y + 1.07 * s, z);
+    this.addStatic(bowl, T.dark);
+    const coal = new THREE.CylinderGeometry(0.45 * s, 0.45 * s, 0.03, 14);
+    coal.translate(x, y + 1.22 * s, z);
+    this.addStatic(coal, T.coals, false);
+    this.block(x - 0.5 * s, y, z - 0.5 * s, x + 0.5 * s, y + 1.24 * s, z + 0.5 * s);
+    this.flame(V3(x, y + 1.2 * s, z), 1.75 * s, { light, intensity, distance, color });
+  }
+  // ---- architecture -----------------------------------------------------------
+  // A wall slab with Maya corbel-vaulted doorways cut through it.
+  // axis 'z': spans x (a) and y (b) between z = c0..c1; axis 'x': spans z and y.
+  // doors: [{ a, w = 2.4, h = 2.8, steps = 4 }]
+  archWall(axis, c0, c1, a0, a1, b0, b1, mat, doors = [], { lintel = true } = {}) {
+    const holes = doors.map((d) => {
+      const w = d.w || 2.4, h = d.h || 2.8, n = d.steps ?? 4;
+      return { a0: d.a - w / 2, a1: d.a + w / 2, b0: b0 - 1, b1: Math.min(b1, b0 + h + n * 0.3) };
+    });
+    this.wall(axis, c0, c1, a0, a1, b0, b1, mat, holes);
+    const B = (pa0, pb0, pa1, pb1, m, e = 0) => {
+      if (axis === 'z') this.box(pa0, pb0, c0 - e, pa1, pb1, c1 + e, m);
+      else this.box(c0 - e, pb0, pa0, c1 + e, pb1, pa1, m);
+    };
+    for (const d of doors) {
+      const w = d.w || 2.4, h = d.h || 2.8, n = d.steps ?? 4;
+      const step = (w / 2 - 0.22) / n;
+      for (let i = 0; i < n; i++) {
+        const y0 = b0 + h + i * 0.3, inset = (i + 1) * step;
+        if (y0 + 0.3 > b1 + 1e-6) break;
+        B(d.a - w / 2, y0, d.a - w / 2 + inset, y0 + 0.3, mat);
+        B(d.a + w / 2 - inset, y0, d.a + w / 2, y0 + 0.3, mat);
+      }
+      if (lintel && b0 + h + n * 0.3 + 0.45 <= b1) B(d.a - w / 2 - 0.3, b0 + h + n * 0.3, d.a + w / 2 + 0.3, b0 + h + n * 0.3 + 0.45, this.T.carved, 0.05);
+    }
+  }
+  // A walled room with corbel-vaulted doorways and roof. Doors per side:
+  // n (−z), s (+z), e (+x), w (−x), each [{ a, w, h }] with `a` the absolute
+  // coordinate along that wall.
+  chamber({ x0, z0, x1, z1, h, t = 0.6, y = 0, doors = {}, skip = [], floor = this.T.floor, wall = this.T.stone, roof = true, floorBox = true, roofSteps = 4, roofMat = null, skylight = null }) {
+    if (floorBox) this.box(x0 - t, y - 0.5, z0 - t, x1 + t, y, z1 + t, floor);
+    if (!skip.includes('s')) this.archWall('z', z1, z1 + t, x0 - t, x1 + t, y, y + h, wall, doors.s || []);
+    if (!skip.includes('n')) this.archWall('z', z0 - t, z0, x0 - t, x1 + t, y, y + h, wall, doors.n || []);
+    if (!skip.includes('e')) this.archWall('x', x1, x1 + t, z0, z1, y, y + h, wall, doors.e || []);
+    if (!skip.includes('w')) this.archWall('x', x0 - t, x0, z0, z1, y, y + h, wall, doors.w || []);
+    if (roof) this.corbelRoof(x0 - t, z0 - t, x1 + t, z1 + t, y + h, { axis: x1 - x0 > z1 - z0 ? 'x' : 'z', steps: roofSteps, mat: roofMat || wall, hole: skylight });
+  }
+  // Corbel-vaulted ceiling over a rectangular room (stepped inward along `axis`).
+  // `hole` ({ x0, z0, x1, z1 }) leaves a skylight in the capstones.
+  corbelRoof(x0, z0, x1, z1, y, { axis = 'x', steps = 4, rise = 0.35, mat = this.T.stone, cap = 0.5, hole = null } = {}) {
+    const span = axis === 'x' ? z1 - z0 : x1 - x0;
+    const inset = Math.min(0.5, (span / 2 - 0.5) / steps);
+    for (let i = 0; i < steps; i++) {
+      const ya = y + i * rise, yb = ya + rise, k = (i + 1) * inset;
+      if (axis === 'x') { this.box(x0, ya, z0, x1, yb, z0 + k, mat); this.box(x0, ya, z1 - k, x1, yb, z1, mat); }
+      else { this.box(x0, ya, z0, x0 + k, yb, z1, mat); this.box(x1 - k, ya, z0, x1, yb, z1, mat); }
+    }
+    const yc = y + steps * rise;
+    this.wall('y', yc, yc + cap, x0, x1, z0, z1, mat, hole ? [{ a0: hole.x0, a1: hole.x1, b0: hole.z0, b1: hole.z1 }] : []);
+  }
+  // Steps climbing along z (dir ±1) from (zStart, y0).
+  stairs(x0, x1, zStart, dir, y0, n, { rise = 0.3, run = 0.45, mat = this.T.stone, solid = true } = {}) {
+    for (let i = 0; i < n; i++) {
+      const za = zStart + dir * i * run, zb = za + dir * run;
+      this.box(x0, y0, za, x1, y0 + (i + 1) * rise, zb, mat, { solid });
+    }
+  }
+  stairsX(z0, z1, xStart, dir, y0, n, { rise = 0.3, run = 0.45, mat = this.T.stone, solid = true } = {}) {
+    for (let i = 0; i < n; i++) {
+      const xa = xStart + dir * i * run, xb = xa + dir * run;
+      this.box(xa, y0, z0, xb, y0 + (i + 1) * rise, z1, mat, { solid });
+    }
+  }
+  pillar(x, z, y0, h, w = 0.9, { mat = this.T.stone, band = true } = {}) {
+    const T = this.T;
+    this.box(x - w / 2 - 0.15, y0, z - w / 2 - 0.15, x + w / 2 + 0.15, y0 + 0.3, z + w / 2 + 0.15, T.dark);
+    this.box(x - w / 2, y0 + 0.3, z - w / 2, x + w / 2, y0 + h - 0.35, z + w / 2, mat);
+    if (band && h > 2.4) this.box(x - w / 2 - 0.03, y0 + h * 0.55, z - w / 2 - 0.03, x + w / 2 + 0.03, y0 + h * 0.55 + 0.5, z + w / 2 + 0.03, T.carved, { solid: false });
+    this.box(x - w / 2 - 0.18, y0 + h - 0.35, z - w / 2 - 0.18, x + w / 2 + 0.18, y0 + h, z + w / 2 + 0.18, T.dark);
+  }
+  // Feathered-serpent head (Kukulkan) facing an axis direction. Returns eye positions.
+  serpentHead(origin, facing, s = 1, { eyes = true, solid = true } = {}) {
+    const T = this.T;
+    const f = snapAxis(facing);
+    const r = V3(f.z, 0, -f.x);
+    const W = (lx, ly, lz) => V3(origin.x + (r.x * lx + f.x * lz) * s, origin.y + ly * s, origin.z + (r.z * lx + f.z * lz) * s);
+    const B = (x0, y0, z0, x1, y1, z1, mat) => { const a = W(x0, y0, z0), b = W(x1, y1, z1); this.box(a.x, a.y, a.z, b.x, b.y, b.z, mat, { solid: false }); };
+    B(-0.95, 0, -1.3, 0.95, 0.45, 0.95, T.stone);
+    B(-0.72, 0.45, 0.25, 0.72, 0.6, 0.92, T.red);
+    B(-1.0, 0.6, -1.4, 1.0, 1.55, 0.75, T.stone);
+    B(-0.8, 0.68, 0.75, 0.8, 1.32, 1.45, T.stone);
+    B(-0.45, 1.32, 1.05, 0.45, 1.85, 1.48, T.carved);
+    B(-1.08, 1.55, -0.25, -0.4, 1.86, 0.62, T.stone);
+    B(0.4, 1.55, -0.25, 1.08, 1.86, 0.62, T.stone);
+    B(-1.03, 0.98, -1.2, 1.03, 1.14, 0.45, T.red);
+    B(-0.82, 1.12, 1.44, 0.82, 1.2, 1.5, T.red);
+    for (const sx of [-1, 1]) {
+      const fang = new THREE.ConeGeometry(0.09 * s, 0.34 * s, 6);
+      fang.rotateX(Math.PI);
+      const p = W(sx * 0.52, 0.5, 1.32);
+      fang.translate(p.x, p.y, p.z);
+      this.addStatic(fang, T.bone);
+    }
+    // Feather crest fanned behind the head.
+    const q = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(r, Y_UP, f));
+    for (let i = 0; i < 7; i++) {
+      const g = new THREE.BoxGeometry(0.34 * s, 1.7 * s, 0.1 * s);
+      g.translate(0, 0.85 * s, 0);
+      g.applyMatrix4(new THREE.Matrix4().makeRotationX(-0.55));
+      g.applyMatrix4(new THREE.Matrix4().makeRotationZ((i - 3) * 0.32));
+      g.applyMatrix4(new THREE.Matrix4().makeRotationFromQuaternion(q));
+      const p = W(0, 1.35, -1.25);
+      g.translate(p.x, p.y, p.z);
+      this.addStatic(g, i % 2 ? T.teal : T.jade);
+    }
+    if (solid) {
+      const a = W(-1.0, 0, -1.4), b = W(1.0, 1.86, 1.5);
+      this.block(Math.min(a.x, b.x), a.y, Math.min(a.z, b.z), Math.max(a.x, b.x), b.y, Math.max(a.z, b.z));
+    }
+    const eyeL = W(-0.86, 1.3, 0.66), eyeR = W(0.86, 1.3, 0.66);
+    if (eyes) {
+      for (const p of [eyeL, eyeR]) {
+        const g = new THREE.SphereGeometry(0.17 * s, 16, 12);
+        g.translate(p.x, p.y, p.z);
+        this.addStatic(g, T.jade, false);
+      }
+    }
+    return { eyeL, eyeR };
+  }
+  // ---- carvings, murals and plaques ------------------------------------------
+  plaque(lines, pos, normal, w, h, { color = '#2a1a0c', size = 110, glow = 0.22, upHint = null, bg = 'rgb(188,170,134)' } = {}) {
+    const tex = this.own(this.game.tex.text(lines, { w: Math.round(256 * (w / h)) * 2, h: 512, size, color, bg, font: FONT_TEMPLE, font2: FONT_TEMPLE, glow: false, border: true, weight: 700 }));
+    const mat = this.own(new THREE.MeshStandardMaterial({ map: tex, roughness: 0.9, emissive: 0xffffff, emissiveMap: tex, emissiveIntensity: glow }));
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
+    m.position.copy(pos);
+    this.orientPlane(m, normal, upHint);
+    this.scene.add(m);
+    return m;
+  }
+  mural(pos, normal, w, h, draw, opts = {}) {
+    const tex = this.own(this.game.tex.mural(Math.round(w * 220), Math.round(h * 220), draw, opts));
+    const mat = this.own(new THREE.MeshStandardMaterial({ map: tex, roughness: 0.92, transparent: true, emissive: 0xffffff, emissiveMap: tex, emissiveIntensity: opts.glow ?? 0.2 }));
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
+    m.position.copy(pos);
+    this.orientPlane(m, normal, opts.upHint || null);
+    this.scene.add(m);
+    return m;
+  }
+  // A single carved glyph on a stone tablet, optionally glowing.
+  glyphStone(kind, pos, normal, size = 1, { glow = 0.35, color = 0xffb070, tablet = true } = {}) {
+    const T = this.T, tex = this.game.tex;
+    const n = snapAxis(normal);
+    if (tablet) {
+      const d = 0.14, hs = size * 0.55;
+      const c = pos.clone().addScaledVector(n, -d / 2);
+      const ex = V3(Math.abs(n.x) > 0.5 ? d / 2 : hs, hs, Math.abs(n.z) > 0.5 ? d / 2 : hs);
+      if (Math.abs(n.y) > 0.5) ex.set(hs, d / 2, hs);
+      this.box(c.x - ex.x, c.y - ex.y, c.z - ex.z, c.x + ex.x, c.y + ex.y, c.z + ex.z, T.stone, { solid: false });
+    }
+    const mat = this.own(new THREE.MeshStandardMaterial({ map: tex.glyphTex(kind, '#2e1e0e'), transparent: true, roughness: 0.9, emissive: color, emissiveMap: tex.glyphTex(kind, '#ffffff'), emissiveIntensity: glow, depthWrite: false }));
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(size * 0.92, size * 0.92), mat);
+    m.position.copy(pos).addScaledVector(n, 0.012);
+    this.orientPlane(m, n, Math.abs(n.y) > 0.5 ? V3(0, 0, -1) : Y_UP);
+    this.scene.add(m);
+    return m;
+  }
+  // ---- light effects -------------------------------------------------------------
+  lightColumn(pos, hex, height = 16) {
+    const mat = this.own(new THREE.MeshBasicMaterial({ map: this.game.tex.beamFade(), color: new THREE.Color(hex).multiplyScalar(1.1), transparent: true, opacity: 0.3, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, height, 16, 1, true), mat);
+    m.position.set(pos.x, pos.y - 0.7 + height / 2, pos.z);
+    m.userData.op = 0.3;
+    this.scene.add(m);
+    return m;
+  }
+  // A vertical shaft of sun- or moonlight with dust drifting inside.
+  shaft(x, z, yTop, yBottom, r = 1.2, color = 0xfff0c8, opacity = 0.2) {
+    const mat = this.own(new THREE.MeshBasicMaterial({ map: this.game.tex.beamFade(), color: new THREE.Color(color), transparent: true, opacity, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+    const h = yTop - yBottom;
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.85, r, h, 24, 1, true), mat);
+    m.position.set(x, yBottom + h / 2, z);
+    this.scene.add(m);
+    new ParticleField(this, { count: 70, min: V3(x - r * 0.8, yBottom, z - r * 0.8), max: V3(x + r * 0.8, yTop, z + r * 0.8), color: 0xfff2d0, size: 0.05, intensity: 1.5, opacity: 0.7, drift: V3(0, -0.05, 0), jitter: 0.08 });
+    return m;
+  }
+  skyDome({ top = 0x050a18, horizon = 0x1a2a3a, glow = 0x6a7a9a, moon = V3(-0.35, 0.55, -0.75), moonCol = 0xfff6e0, moonSize = 0.0011, stars = 1 } = {}) {
+    this.skyU = {
+      uTop: { value: new THREE.Color(top) }, uHorizon: { value: new THREE.Color(horizon) }, uGlow: { value: new THREE.Color(glow) },
+      uMoon: { value: moon.clone().normalize() }, uMoonCol: { value: new THREE.Color(moonCol).multiplyScalar(1.6) },
+      uTime: { value: 0 }, uStars: { value: stars }, uMoonSize: { value: moonSize },
+    };
+    const mat = this.own(new THREE.ShaderMaterial({ uniforms: this.skyU, vertexShader: SKY_VERT, fragmentShader: SKY_FRAG, side: THREE.BackSide, depthWrite: false, fog: false }));
+    this.sky = new THREE.Mesh(new THREE.SphereGeometry(400, 32, 16), mat);
+    this.sky.renderOrder = -10;
+    this.sky.frustumCulled = false;
+    this.scene.add(this.sky);
+  }
+  moonLight(dir, { color = 0xaebfff, intensity = 1.1, extent = 32, target = V3() } = {}) {
+    const l = new THREE.DirectionalLight(color, intensity);
+    l.position.copy(target).addScaledVector(dir.clone().normalize(), 70);
+    l.target.position.copy(target);
+    const q = this.game.quality;
+    if (q.shadows) {
+      l.castShadow = true;
+      l.shadow.mapSize.set(q.shadowSize, q.shadowSize);
+      const c = l.shadow.camera;
+      c.left = -extent; c.right = extent; c.top = extent; c.bottom = -extent; c.near = 1; c.far = 180;
+      l.shadow.bias = -0.0006;
+      l.shadow.normalBias = 0.05;
+    }
+    this.scene.add(l, l.target);
+    return l;
+  }
+  water(x0, z0, x1, z1, y, { deep = 0x020a0a, shallow = 0x0c302c, glint = 0x9fd8ff } = {}) {
+    const u = { uTime: { value: 0 }, uDeep: { value: new THREE.Color(deep) }, uShallow: { value: new THREE.Color(shallow) }, uGlint: { value: new THREE.Color(glint) } };
+    const mat = this.own(new THREE.ShaderMaterial({ uniforms: u, vertexShader: WATER_VERT, fragmentShader: WATER_FRAG, transparent: true, depthWrite: false }));
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(x1 - x0, z1 - z0), mat);
+    m.rotation.x = -Math.PI / 2;
+    m.position.set((x0 + x1) / 2, y, (z0 + z1) / 2);
+    this.scene.add(m);
+    this.waterU.push(u);
+    return m;
+  }
+  fireflies(min, max, count = 120) {
+    return new ParticleField(this, { count, min, max, color: 0xd8ff7a, size: 0.08, intensity: 2.2, opacity: 0.9, drift: V3(0, 0, 0), jitter: 0.45 });
+  }
+  dust(min, max, count = 160, color = 0xffe8c0) {
+    return new ParticleField(this, { count, min, max, color, size: 0.035, intensity: 1.2, opacity: 0.5 });
+  }
+  killZone(min, max, message) { return new KillZone(this, { min, max, message }); }
+  // The remains of someone who came before.
+  bones(x, z, y = 0) {
+    const T = this.T, r = this.rnd;
+    const skull = new THREE.SphereGeometry(0.13, 12, 9);
+    skull.scale(1, 0.9, 1.15);
+    skull.translate(x, y + 0.11, z);
+    this.addStatic(skull, T.bone);
+    for (let i = 0; i < 4; i++) {
+      const g = new THREE.CylinderGeometry(0.03, 0.035, 0.42 + r() * 0.2, 6);
+      g.rotateZ(Math.PI / 2);
+      g.rotateY(r() * TAU);
+      g.translate(x + (r() - 0.5) * 0.7, y + 0.04, z + (r() - 0.5) * 0.7);
+      this.addStatic(g, T.bone);
+    }
+  }
+  // Glowing exit for a temple level: a carved world tree over a passage.
+  templeExit(pos, normal, lines = ['ONWARD', 'deeper into the temple']) {
+    this.glyphStone('tree', pos.clone().add(V3(0, 1.05, 0)), normal, 0.9, { glow: 1.6, color: 0x5dffb0 });
+    this.plaque(lines, pos, normal, 2.0, 0.75, { size: 140, glow: 0.5 });
+    this.point(pos.x + normal.x * 1.4, pos.y + 0.3, pos.z + normal.z * 1.4, 0x7affc0, 10, 8);
+  }
+  // ---- foliage (instanced alpha cards) ---------------------------------------
+  card(kind, x, y, z, yaw, tilt, w, h) {
+    (this.fol[kind] || (this.fol[kind] = [])).push({ x, y, z, yaw, tilt, w, h });
+  }
+  plant(x, y, z, kind = 'broad', scale = 1, n = 0) {
+    const r = this.rnd;
+    const count = n || (kind === 'grass' ? 3 : kind === 'fern' ? 4 : 5);
+    for (let i = 0; i < count; i++) this.card(kind, x, y, z, r() * TAU, 0.15 + r() * 0.45, scale * (0.85 + r() * 0.4), scale * (0.8 + r() * 0.5));
+  }
+  // Scatter plants inside a rectangle.
+  scatter(x0, z0, x1, z1, count, y = 0, kinds = ['broad', 'fern', 'grass'], scale = [0.9, 1.8]) {
+    const r = this.rnd;
+    for (let i = 0; i < count; i++) this.plant(lerp(x0, x1, r()), y, lerp(z0, z1, r()), kinds[Math.floor(r() * kinds.length)], lerp(scale[0], scale[1], r()));
+  }
+  tree(x, z, h = 14, rad = 0.55, y = 0) {
+    const T = this.T, r = this.rnd;
+    const trunk = new THREE.CylinderGeometry(rad * 0.65, rad, h, 10, 3);
+    trunk.translate(x, y + h / 2, z);
+    this.addStatic(trunk, T.bark);
+    for (let k = 0; k < 5; k++) {
+      const a = (k / 5) * TAU + r();
+      const g = new THREE.BoxGeometry(0.16, 1.7, 1.3);
+      g.translate(0, 0.85, rad + 0.45);
+      g.rotateY(a);
+      g.translate(x, y, z);
+      this.addStatic(g, T.bark);
+    }
+    for (let i = 0; i < 16; i++) {
+      const a = r() * TAU, d = r() * 3.2;
+      this.card('canopy', x + Math.cos(a) * d, y + h - 2.2 + r() * 2.6, z + Math.sin(a) * d, r() * TAU, 0.9 + r() * 0.6, 4 + r() * 3, 4 + r() * 3);
+    }
+    this.block(x - rad, y, z - rad, x + rad, y + h, z + rad);
+  }
+  vines(x0, z0, x1, z1, yTop, normal, count, len = [1.5, 4.5]) {
+    const r = this.rnd, n = normal.clone().normalize();
+    const yaw = Math.atan2(n.x, n.z);
+    for (let i = 0; i < count; i++) {
+      const t = (i + r() * 0.8) / count, L = lerp(len[0], len[1], r());
+      this.card('vine', lerp(x0, x1, t) + n.x * 0.06, yTop - L, lerp(z0, z1, t) + n.z * 0.06, yaw, 0, 0.55 + r() * 0.3, L);
+    }
+  }
+  finishFoliage() {
+    const base = new THREE.PlaneGeometry(1, 1);
+    base.translate(0, 0.5, 0);
+    const m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), p = V3(), sc = V3(), col = new THREE.Color();
+    for (const [kind, list] of Object.entries(this.fol)) {
+      if (!list.length) continue;
+      const mesh = new THREE.InstancedMesh(base.clone(), this.T.leaf[kind], list.length);
+      list.forEach((c, i) => {
+        e.set(-c.tilt, c.yaw, 0, 'YXZ');
+        q.setFromEuler(e);
+        p.set(c.x, c.y, c.z);
+        sc.set(c.w, c.h, 1);
+        m.compose(p, q, sc);
+        mesh.setMatrixAt(i, m);
+        const k = 0.7 + this.rnd() * 0.45;
+        col.setRGB(k * (0.92 + this.rnd() * 0.1), k, k * 0.9);
+        mesh.setColorAt(i, col);
+      });
+      mesh.receiveShadow = true;
+      mesh.frustumCulled = false;
+      this.scene.add(mesh);
+    }
+    base.dispose();
+    this.fol = {};
+  }
+  // ---- per frame -----------------------------------------------------------------
+  updateCommon(dt) {
+    super.updateCommon(dt);
+    const cam = this.game.camera.position;
+    const t = this.time;
+    for (const f of this.flames) {
+      f.g.rotation.y = Math.atan2(cam.x - f.g.position.x, cam.z - f.g.position.z);
+      const k = 1 + Math.sin(t * 13 + f.ph) * 0.07 + Math.sin(t * 7.3 + f.ph * 2) * 0.06;
+      f.outer.scale.set(2 - k, k, 1);
+      f.inner.scale.set(0.55 * (2 - k), 0.55 * (0.9 + (k - 1) * 1.6), 1);
+    }
+    for (const fl of this.flickers) fl.l.intensity = fl.base * (0.82 + 0.1 * Math.sin(t * 11 + fl.ph) + 0.08 * Math.sin(t * 23.7 + fl.ph * 3));
+    for (const u of this.waterU) u.uTime.value += dt;
+    if (this.sky) { this.sky.position.copy(cam); this.skyU.uTime.value += dt; }
+  }
+}
+
+/* =====================================================================
+   LEVEL 6 — THE JUNGLE GATE
+   A moonlit plaza before a pyramid. The Gate of the Five needs five
+   different offerings, each guarded by a small trial: an open altar, a
+   platform reached with a push block, a shrine of rising spikes, a door
+   sealed by glyph dials, and a cenote crossed on crumbling stones.
+   ===================================================================== */
+class Level6 extends TempleLevel {
+  static meta = { name: 'THE JUNGLE GATE', ambient: 'jungle', part: 2, seed: 6 };
+  build() {
+    const T = this.T;
+    this.relicKinds = ['mask', 'disc', 'blade', 'feather', 'idol'];
+    this.setAtmosphere({ bg: 0x0b1522, fog: 0x0d1924, density: 0.017, env: 0.3, hemi: [0x8aa6d6, 0x1e2616, 0.6] });
+    this.skyDome({ top: 0x030814, horizon: 0x1a2c40, glow: 0x8090b0, moon: V3(0.5, 0.42, 0.75) });
+    this.moonLight(V3(0.5, 0.75, 0.7), { color: 0xb4c4ff, intensity: 1.15, extent: 34, target: V3(0, 0, -2) });
+    this.spawn = { pos: V3(0, 0.12, 20.5), up: Y_UP, look: V3(0, 0, -1) };
+    this.bounds = { min: V3(-70, -12, -80), max: V3(70, 50, 70) };
+    this.hints = [
+      'The Gate of the Five needs five different offerings. A pillar of coloured light marks where each one lies.',
+      `The Sun Disc rests on a platform too high to climb. Push the loose carved block (${ctl('E', 'USE')}) right up against it, climb onto the block, then jump.`,
+      'In the Shrine of Knives the spikes rise in a rhythm. Wait for a row to sink, then walk on.',
+      "The Feathered Serpent's door listens to the stela beside it: turn each dial to the glyph above it on the stela, left to right.",
+      'The stones in the cenote crumble a moment after you land — keep jumping. They rise again after a few seconds.',
+    ];
+    this.buildPlaza();
+    this.buildGate();
+    this.buildPyramid();
+    this.buildMaskAltar();
+    this.buildVenusPlatform();
+    this.buildKnifeShrine();
+    this.buildSerpentShrine();
+    this.buildCenote();
+    this.buildJungle();
+    this.finish();
+  }
+  buildPlaza() {
+    const T = this.T;
+    // The jungle floor beyond, then the paved plaza with a hole for the cenote.
+    const earth = (x0, z0, x1, z1) => this.box(x0, -1.4, z0, x1, -0.06, z1, T.earth, { scale: 6, shadow: false });
+    earth(-90, -100, -26, 80);
+    earth(26, -100, 90, 80);
+    earth(-26, 24, 26, 80);
+    earth(-26, -100, -2.5, -24);
+    earth(2.5, -100, 26, -24);
+    earth(-2.5, -100, 2.5, -38.5);
+    this.box(-26, -0.5, -24, 26, 0, 6, T.floorMoss);
+    this.box(-26, -0.5, 20, 26, 0, 24, T.floorMoss);
+    this.box(-26, -0.5, 6, -22, 0, 20, T.floorMoss);
+    this.box(-8, -0.5, 6, 26, 0, 20, T.floorMoss);
+    // The white road (sacbe) to the gate.
+    this.box(-2.4, 0, -23.9, 2.4, 0.12, 23.6, T.floor);
+    this.box(-2.65, 0, -23.9, -2.4, 0.2, 23.6, T.stone);
+    this.box(2.4, 0, -23.9, 2.65, 0.2, 23.6, T.stone);
+    // Ruined boundary walls and invisible limits.
+    const rnd = this.rnd;
+    const ruin = (axis, c, a0, a1) => {
+      for (let a = a0; a < a1; a += 2) {
+        const h = 0.5 + rnd() * 1.3, b = Math.min(a1, a + 2);
+        if (axis === 'x') this.box(c - 0.3, 0, a, c + 0.3, h, b, T.mossy);
+        else this.box(a, 0, c - 0.3, b, h, c + 0.3, T.mossy);
+      }
+    };
+    ruin('x', -25.7, -24, 24);
+    ruin('x', 25.7, -24, 24);
+    ruin('z', 23.7, -26, 26);
+    ruin('z', -24.3, -26, -14.2);
+    ruin('z', -24.3, 14.2, 26);
+    this.block(-30, -2, -30, -25.4, 12, 30);
+    this.block(25.4, -2, -30, 30, 12, 30);
+    this.block(-30, -2, 23.4, 30, 12, 30);
+    this.block(-30, -2, -30, -14, 12, -24.05);
+    this.block(14, -2, -30, 30, 12, -24.05);
+    // Braziers along the road; every other one casts light.
+    let i = 0;
+    for (const z of [14, 4, -6, -16]) {
+      for (const x of [-3.4, 3.4]) {
+        this.brazier(x, 0, z, { light: (i + (z === 4 || z === -16 ? 1 : 0)) % 2 === 0, intensity: 16, distance: 13 });
+        i++;
+      }
+    }
+    // A stela of welcome near the start.
+    this.box(3.3, 0, 18.7, 5.5, 3.4, 19.3, T.carved);
+    this.plaque(['THE GATE OF THE FIVE', 'five offerings open the way'], V3(4.4, 1.9, 19.32), V3(0, 0, 1), 1.9, 0.75, { size: 120 });
+    this.glyphStone('sun', V3(4.4, 2.95, 19.32), V3(0, 0, 1), 0.7, { tablet: false, glow: 0.6 });
+    // Fallen columns and stelae.
+    for (const [x, z, h] of [[-10, -19, 2.4], [10, -19, 3.1], [-12, -8, 1.2], [21, 2, 3.6], [-6, 22, 1.4], [8, 21.5, 2.0], [-18, -14, 4.0]]) this.pillar(x, z, 0, h, 0.8);
+    for (const [x, z] of [[-9, -2], [9, -9], [-16, 2.5]]) {
+      this.box(x - 0.6, 0, z - 0.25, x + 0.6, 2.8, z + 0.25, T.carved);
+      this.box(x - 0.75, 0, z - 0.4, x + 0.75, 0.3, z + 0.4, T.dark);
+    }
+    this.fireflies(V3(-25, 0.4, -23), V3(25, 4.5, 23), 170);
+  }
+  buildGate() {
+    const T = this.T;
+    // The great wall of the temple platform, with the gate in a corbel arch.
+    this.archWall('z', -26, -24, -14, 14, 0, 6.5, T.stone, [{ a: 0, w: 5, h: 4.6, steps: 4 }]);
+    this.box(-14.2, 6.5, -26.2, 14.2, 7.3, -23.8, T.carved);
+    this.box(-14.2, 0, -24.1, -2.7, 0.7, -23.85, T.red);
+    this.box(2.7, 0, -24.1, 14.2, 0.7, -23.85, T.red);
+    this.box(-14.2, 4.95, -24.1, -3.2, 5.35, -23.85, T.red);
+    this.box(3.2, 4.95, -24.1, 14.2, 5.35, -23.85, T.red);
+    for (const x of [-10.5, 10.5]) this.glyphStone('ajaw', V3(x, 3.0, -23.85), V3(0, 0, 1), 2.2, { glow: 0.25 });
+    this.torch(V3(-7, 3.2, -24), V3(0, 0, 1), { intensity: 12, distance: 11 });
+    this.torch(V3(7, 3.2, -24), V3(0, 0, 1), { intensity: 12, distance: 11 });
+    this.serpentHead(V3(-4.7, 0, -22.75), V3(0, 0, 1), 1.1);
+    this.serpentHead(V3(4.7, 0, -22.75), V3(0, 0, 1), 1.1);
+    this.plaque(['THE GATE OF THE FIVE'], V3(0, 6.9, -23.78), V3(0, 0, 1), 4.2, 0.62, { size: 150, glow: 0.35 });
+    // Platform mass and the tunnel beyond the gate.
+    this.box(-14, -3, -38, -2.5, 6.5, -26, T.stone);
+    this.box(2.5, -3, -38, 14, 6.5, -26, T.stone);
+    this.box(-2.5, 5.8, -38, 2.5, 6.5, -26, T.stone);
+    for (let i = 0; i < 4; i++) {
+      const k = (i + 1) * 0.57, y = 4.6 + i * 0.3;
+      this.box(-2.5, y, -38, -2.5 + k, y + 0.3, -26, T.stone);
+      this.box(2.5 - k, y, -38, 2.5, y + 0.3, -26, T.stone);
+    }
+    this.box(-2.5, -0.5, -30, 2.5, 0, -24, T.floor);
+    for (let i = 0; i < 8; i++) this.box(-2.5, -3, -30 - 0.5 * (i + 1), 2.5, -0.3 * (i + 1), -30 - 0.5 * i, T.floor);
+    this.box(-2.5, -3.5, -38, 2.5, -2.4, -34, T.floor);
+    this.box(-2.5, -3, -38.5, 2.5, 6.5, -38, T.stone);
+    this.torch(V3(-2.5, 2.2, -28.5), V3(1, 0, 0), { intensity: 8, distance: 8 });
+    this.torch(V3(2.5, 2.2, -28.5), V3(-1, 0, 0), { light: false });
+    this.templeExit(V3(0, -1.1, -37.98), V3(0, 0, 1), ['DESCEND', 'the temple waits below']);
+    this.exitZone(V3(-2.4, -2.6, -37.8), V3(2.4, 0.5, -34.6));
+    // The gate itself: a carved slab with five niches. It sinks when they are filled.
+    this.gate = new Door(this, { min: V3(-2.5, 0, -25.3), max: V3(2.5, 4.6, -24.7), slide: V3(0, -4.75, 0), mat: T.carved, strip: false, sound: 'stone', speed: 4.5 });
+    for (const [x, y, w, h] of [[0, 2.22, 5.0, 0.16], [0, -2.22, 5.0, 0.16], [-2.42, 0, 0.16, 4.6], [2.42, 0, 0.16, 4.6]]) {
+      const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.66), T.dark);
+      b.position.set(x, y, 0);
+      this.gate.mesh.add(b);
+    }
+    const slots = [['mask', -1.45, 1.15], ['disc', 1.45, 1.15], ['blade', -1.45, 3.4], ['feather', 1.45, 3.4], ['idol', 0, 2.28]]
+      .map(([kind, u, v]) => ({ kind, pos: V3(u, v - 2.3, 0.31), normal: V3(0, 0, 1) }));
+    this.shrine = new OfferingShrine(this, { parent: this.gate.mesh, slots, onComplete: () => this.openGate() });
+    this.gateOpen = this.shrine.complete;
+    if (this.gateOpen) this.gate.snap(true);
+  }
+  openGate() {
+    this.gateOpen = true;
+    this.gate.open();
+    this.game.audio.rumble(4);
+    this.game.audio.awaken();
+    this.game.player.shake = 2.5;
+    this.game.ui.toast('THE GATE OF THE FIVE OPENS', 'good', 4);
+    new ParticleField(this, { count: 160, min: V3(-3, 0.1, -25.5), max: V3(3, 5, -22), color: 0xd8c8a8, size: 0.09, intensity: 1, opacity: 0.6, drift: V3(0, 0.3, 0.4), jitter: 0.3 });
+  }
+  buildPyramid() {
+    const T = this.T, zc = -56;
+    for (let i = 0; i < 7; i++) {
+      const hx = 20 - 2.4 * i, hz = 18 - 2.4 * i, y0 = i * 3.2;
+      this.box(-hx, y0, zc - hz, hx, y0 + 3.2, zc + hz, i % 2 ? T.mossy : T.stone, { solid: false, scale: 6 });
+      this.box(-hx - 0.06, y0 + 2.55, zc - hz - 0.06, hx + 0.06, y0 + 3.2, zc + hz + 0.06, T.carved, { solid: false });
+      if (i < 3) {
+        this.vines(-hx + 0.5, zc + hz + 0.08, -4, zc + hz + 0.08, y0 + 3.2, V3(0, 0, 1), 14 - i * 3, [1, 3]);
+        this.vines(4, zc + hz + 0.08, hx - 0.5, zc + hz + 0.08, y0 + 3.2, V3(0, 0, 1), 14 - i * 3, [1, 3]);
+      }
+    }
+    this.stairs(-3, 3, -38, -1, 6.5, 40, { rise: 0.4, run: 0.31, solid: false });
+    this.stairs(-3.7, -3, -38, -1, 6.75, 40, { rise: 0.4, run: 0.31, solid: false, mat: T.dark });
+    this.stairs(3, 3.7, -38, -1, 6.75, 40, { rise: 0.4, run: 0.31, solid: false, mat: T.dark });
+    this.serpentHead(V3(-3.35, 6.5, -36.85), V3(0, 0, 1), 0.75, { solid: false });
+    this.serpentHead(V3(3.35, 6.5, -36.85), V3(0, 0, 1), 0.75, { solid: false });
+    // The temple on the summit, lit from within.
+    const zt = zc + 3.5;
+    this.box(-4.8, 22.4, zt - 4, 4.8, 27.2, zt + 3.9, T.stone, { solid: false });
+    this.box(-5.0, 26.6, zt - 4.2, 5.0, 27.4, zt + 4.1, T.carved, { solid: false });
+    this.box(-3.6, 27.4, zt - 0.7, 3.6, 31, zt - 0.1, T.carved, { solid: false });
+    for (const x of [-2.6, 0, 2.6]) this.box(x - 0.7, 22.4, zt + 3.85, x + 0.7, 25, zt + 4.0, T.void, { solid: false, shadow: false });
+    this.flame(V3(0, 22.6, zt + 3.6), 2.2);
+    this.flame(V3(-2.6, 22.6, zt + 3.6), 1.4);
+    this.flame(V3(2.6, 22.6, zt + 3.6), 1.4);
+  }
+  buildMaskAltar() {
+    const T = this.T;
+    const x = 7, z = 14;
+    const alt = new THREE.CylinderGeometry(0.9, 1.05, 0.95, 18);
+    alt.translate(x, 0.475, z);
+    this.addStatic(alt, T.carved);
+    const rim = new THREE.CylinderGeometry(1.0, 1.0, 0.12, 18);
+    rim.translate(x, 0.95, z);
+    this.addStatic(rim, T.red);
+    this.block(x - 0.95, 0, z - 0.95, x + 0.95, 1.0, z + 0.95);
+    for (let k = 0; k < 4; k++) {
+      const a = (k / 4) * TAU + 0.4;
+      const sx = x + Math.cos(a) * 2.6, sz = z + Math.sin(a) * 2.6;
+      this.box(sx - 0.35, 0, sz - 0.35, sx + 0.35, 2.2 + k * 0.2, sz + 0.35, T.carved);
+      this.flame(V3(sx, 2.2 + k * 0.2, sz), 0.6);
+    }
+    if (!this.found('mask')) new Relic(this, { kind: 'mask', pos: V3(x, 1.7, z) });
+  }
+  buildVenusPlatform() {
+    const T = this.T;
+    this.box(9, 0, 0, 15, 2.1, 6, T.carved);
+    this.box(8.95, 1.6, -0.05, 15.05, 1.85, 6.05, T.red, { solid: false });
+    this.box(8.95, 0, -0.05, 15.05, 0.35, 6.05, T.dark, { solid: false });
+    // Its stairs have collapsed into low rubble.
+    const rnd = this.rnd;
+    for (let i = 0; i < 9; i++) {
+      const x = 9.6 + rnd() * 4.8, z = -1.4 - rnd() * 1.6, s = 0.3 + rnd() * 0.4;
+      this.box(x - s, 0, z - s, x + s, 0.25 + rnd() * 0.35, z + s, T.stone);
+    }
+    this.box(11.4, 2.1, 2.4, 12.6, 2.75, 3.6, T.stone);
+    this.glyphStone('sun', V3(12, 1.0, 6.01), V3(0, 0, 1), 1.3, { glow: 0.3 });
+    if (!this.found('disc')) {
+      new Relic(this, { kind: 'disc', pos: V3(12, 3.4, 3) });
+      this.pushBlock = new PushBlock(this, { pos: V3(12, 0.55, 10.82), size: V3(1.6, 1.1, 1.6) });
+    }
+  }
+  buildKnifeShrine() {
+    const T = this.T;
+    this.archWall('x', -14.6, -14, -5, 1, 0, 3.4, T.mossy, [{ a: -2, w: 2.4, h: 2.4, steps: 3 }]);
+    this.box(-25, 0, -5, -24.4, 3.4, 1, T.mossy);
+    this.box(-24.4, 0, -5, -14.6, 3.4, -4.4, T.mossy);
+    this.box(-24.4, 0, 0.4, -14.6, 3.4, 1, T.mossy);
+    this.corbelRoof(-25, -5, -14, 1, 3.4, { axis: 'x', steps: 4, rise: 0.35, mat: T.mossy });
+    this.box(-22, 5.3, -2.25, -17, 7.2, -1.75, T.carved, { solid: false });
+    this.glyphStone('skull', V3(-13.98, 2.5, 0.0), V3(1, 0, 0), 0.8, { glow: 0.3 });
+    this.plaque(['SHRINE OF KNIVES'], V3(-13.97, 2.6, -4.1), V3(1, 0, 0), 1.5, 0.45, { size: 130 });
+    this.spikes = [-16.4, -18.8, -21.2].map((cx, i) => new SpikeTrap(this, { x0: cx - 0.6, z0: -4.4, x1: cx + 0.6, z1: 0.4, period: 2.4, up: 0.9, warn: 0.45, offset: i * 0.8 }));
+    this.box(-24.4, 0, -2.7, -23.1, 1.0, -1.3, T.carved);
+    this.torch(V3(-24.4, 2.3, -0.4), V3(1, 0, 0), { intensity: 8, distance: 9 });
+    this.torch(V3(-24.4, 2.3, -3.6), V3(1, 0, 0), { light: false });
+    this.bones(-20, -3.6);
+    this.bones(-17.6, -0.4);
+    if (!this.found('blade')) new Relic(this, { kind: 'blade', pos: V3(-23.75, 1.75, -2) });
+  }
+  buildSerpentShrine() {
+    const T = this.T;
+    this.archWall('z', -13.6, -13, 13, 23, 0, 3.6, T.stone, [{ a: 18, w: 2.4, h: 2.6, steps: 3 }]);
+    this.box(13, 0, -21, 23, 3.6, -20.4, T.stone);
+    this.box(13, 0, -20.4, 13.6, 3.6, -13.6, T.stone);
+    this.box(22.4, 0, -20.4, 23, 3.6, -13.6, T.stone);
+    this.corbelRoof(13, -21, 23, -13, 3.6, { axis: 'x', steps: 4, rise: 0.35 });
+    this.box(15, 5.5, -17.3, 21, 7.6, -16.7, T.carved, { solid: false });
+    this.box(12.8, 0, -13.1, 23.2, 0.5, -12.8, T.red, { solid: false });
+    this.serpentHead(V3(15.6, 0, -11.9), V3(0, 0, 1), 0.6);
+    this.serpentHead(V3(20.4, 0, -11.9), V3(0, 0, 1), 0.6);
+    this.featherDoor = new Door(this, { min: V3(16.8, 0, -13.45), max: V3(19.2, 2.6, -13.15), slide: V3(0, -2.65, 0), mat: T.carved, strip: false, sound: 'stone', speed: 2.4 });
+    this.box(17.4, 0, -19.9, 18.6, 1.0, -18.7, T.carved);
+    this.torch(V3(18, 2.4, -20.4), V3(0, 0, 1), { intensity: 8, distance: 8 });
+    if (!this.found('feather')) new Relic(this, { kind: 'feather', pos: V3(18, 1.8, -19.3) });
+    // Three dials; the stela beside them shows the order.
+    const faces = ['sun', 'moon', 'jaguar', 'serpent'];
+    this.dialAnswer = [3, 0, 2];
+    const start = [0, 1, 3];
+    this.dials = [15.6, 18, 20.4].map((x, i) => new GlyphDial(this, { pos: V3(x, 0, -9.6), facing: V3(0, 0, 1), faces, value: start[i], onChange: () => this.checkDials() }));
+    this.box(10.6, 0, -10.2, 13.4, 3.4, -9.6, T.stone);
+    this.box(10.4, 3.4, -10.4, 13.6, 3.8, -9.4, T.carved);
+    this.mural(V3(12, 1.8, -9.58), V3(0, 0, 1), 2.6, 3.0, (x, w, h, pad) => {
+      const tex = this.game.tex;
+      x.font = `700 ${h * 0.07}px ${FONT_TEMPLE}`;
+      x.textAlign = 'center';
+      x.fillStyle = '#2a1a0c';
+      x.fillText('THE SERPENT LISTENS', w / 2, pad + h * 0.08);
+      const s = w * 0.3;
+      this.answerGlyphs = this.dialAnswer.map((v) => faces[v]);
+      this.answerGlyphs.forEach((k, i) => {
+        const cx = w * (0.2 + i * 0.3), cy = h * 0.42;
+        tex.carveInto(x, 'cart', cx, cy, s * 1.05);
+        tex.carveInto(x, k, cx, cy - s * 0.03, s * 0.75);
+      });
+      x.font = `600 ${h * 0.05}px ${FONT_TEMPLE}`;
+      x.fillText('first · second · third', w / 2, h * 0.66);
+      x.strokeStyle = '#2a1a0c'; x.lineWidth = 4;
+      x.beginPath(); x.moveTo(w * 0.18, h * 0.74); x.lineTo(w * 0.82, h * 0.74); x.lineTo(w * 0.78, h * 0.71); x.moveTo(w * 0.82, h * 0.74); x.lineTo(w * 0.78, h * 0.77); x.stroke();
+    }, { bg: '#b8a682', border: '#4a3418', glow: 0.25 });
+    this.featherSolved = !!this.carry.featherDoor;
+    if (this.featherSolved) {
+      this.dials.forEach((d, i) => d.setValue(this.dialAnswer[i]));
+      this.featherDoor.snap(true);
+    }
+  }
+  checkDials() {
+    if (this.featherSolved) return;
+    if (!this.dials.every((d, i) => d.value === this.dialAnswer[i])) return;
+    this.featherSolved = this.carry.featherDoor = true;
+    this.featherDoor.open();
+    this.game.audio.chime();
+    this.game.ui.toast("THE SERPENT'S DOOR OPENS", 'good');
+  }
+  buildCenote() {
+    const T = this.T;
+    this.box(-23, -7, 5, -22, -0.5, 21, T.mossy);
+    this.box(-8, -7, 5, -7, -0.5, 21, T.mossy);
+    this.box(-22, -7, 5, -8, -0.5, 6, T.mossy);
+    this.box(-22, -7, 20, -8, -0.5, 21, T.mossy);
+    this.box(-22, -8, 6, -8, -7, 20, T.dark);
+    this.water(-22, 6, -8, 20, -2.6);
+    this.killZone(V3(-22, -9, 6), V3(-8, -2.2, 20), 'THE CENOTE SWALLOWS YOU');
+    // Rim stones, with a gap on the east side.
+    this.box(-22.6, 0, 5.4, -7.4, 0.6, 6, T.stone);
+    this.box(-22.6, 0, 20, -7.4, 0.6, 20.6, T.stone);
+    this.box(-22.6, 0, 6, -22, 0.6, 20, T.stone);
+    this.box(-8, 0, 6, -7.4, 0.6, 11.6, T.stone);
+    this.box(-8, 0, 14.4, -7.4, 0.6, 20, T.stone);
+    this.glyphStone('serpent', V3(-7.38, 1.1, 15.6), V3(1, 0, 0), 0.8, { glow: 0.3 });
+    // Crumbling stepping stones and the island.
+    for (const [x, z] of [[-9.6, 13], [-11.8, 12.3], [-14.0, 13.4], [-16.2, 12.5]]) {
+      new CrumbleTile(this, { min: V3(x - 0.7, -7, z - 0.7), max: V3(x + 0.7, -0.05, z + 0.7), mat: T.mossy, delay: 1.0, regen: 4 });
+    }
+    this.box(-21.9, -7, 10.6, -17.8, -0.05, 15.4, T.mossy);
+    this.box(-20.8, -0.05, 12.4, -19.6, 0.85, 13.6, T.carved);
+    if (!this.found('idol')) new Relic(this, { kind: 'idol', pos: V3(-20.2, 1.55, 13) });
+    this.plant(-21.3, -0.05, 11.2, 'fern', 1.2);
+    this.plant(-18.4, -0.05, 15, 'broad', 1.0);
+    this.vines(-21.9, 6.05, -8.1, 6.05, -0.5, V3(0, 0, 1), 16, [1.5, 4]);
+    this.vines(-21.9, 19.95, -8.1, 19.95, -0.5, V3(0, 0, -1), 16, [1.5, 4]);
+    this.vines(-21.95, 6.2, -21.95, 19.8, -0.5, V3(1, 0, 0), 12, [1.5, 4]);
+  }
+  buildJungle() {
+    const r = this.rnd;
+    // Plaza edges.
+    this.scatter(-25, -22, -22.8, 22, 46);
+    this.scatter(22.8, -22, 25, 22, 46);
+    this.scatter(-24, 21.5, 24, 23.2, 30, 0, ['grass', 'fern']);
+    this.scatter(-7, -23.3, -2.9, -22.6, 8, 0, ['fern', 'grass']);
+    this.scatter(2.9, -23.3, 7, -22.6, 8, 0, ['fern', 'grass']);
+    this.scatter(-13, -7, -8, 4, 10, 0, ['grass']);
+    this.scatter(6, -22, 22, -15, 12, 0, ['grass', 'fern']);
+    for (const [x, z, h] of [[-23.5, -21, 13], [23.4, 21, 15], [23.5, -9, 12], [-23.4, 22, 14]]) this.tree(x, z, h, 0.5);
+    // The jungle beyond the walls.
+    for (let i = 0; i < 46; i++) {
+      const a = (i / 46) * TAU + r() * 0.1, d = 31 + r() * 22;
+      const x = Math.cos(a) * d * 1.05, z = -2 + Math.sin(a) * d;
+      if (z < -30 && Math.abs(x) < 24) continue;
+      this.tree(x, z, 12 + r() * 10, 0.5 + r() * 0.35);
+    }
+    for (let i = 0; i < 80; i++) {
+      const a = r() * TAU, d = 28 + r() * 30;
+      const x = Math.cos(a) * d, z = Math.sin(a) * d;
+      if (z < -30 && Math.abs(x) < 24) continue;
+      this.plant(x, -0.06, z, r() < 0.5 ? 'broad' : 'fern', 1.6 + r() * 1.6);
+    }
+    for (let i = 0; i < 60; i++) {
+      const a = r() * TAU, d = 55 + r() * 25;
+      this.card('canopy', Math.cos(a) * d, 4 + r() * 10, Math.sin(a) * d, a + Math.PI / 2, 0.1 + r() * 0.4, 12 + r() * 8, 10 + r() * 6);
+    }
+    this.vines(-14, -23.9, -5.2, -23.9, 6.5, V3(0, 0, 1), 12, [1.5, 4]);
+    this.vines(5.2, -23.9, 14, -23.9, 6.5, V3(0, 0, 1), 12, [1.5, 4]);
+  }
+  update() {
+    const n = this.relicKinds.filter((k) => this.found(k)).length;
+    if (this.gateOpen) this.objective('The Gate of the Five stands open. Descend into the temple.');
+    else if (n < 5) this.objective(`Gather the five offerings for the Gate (${n} / 5). Pillars of light mark where they lie.`);
+    else this.objective('Place the five offerings in the Gate of the Five.');
+  }
+}
+
+/* =====================================================================
+   LEVEL 7 — THE HALL OF COUNTING
+   Maya numbers are bars and dots. The antechamber teaches them; the
+   Counting Floor must be crossed one number at a time; the Corridor of
+   Darts hides three murals that count each god's offerings; three
+   numeral dials beneath the gods open the way on.
+   ===================================================================== */
+class Level7 extends TempleLevel {
+  static meta = { name: 'THE HALL OF COUNTING', ambient: 'temple', part: 2, seed: 7 };
+  build() {
+    const T = this.T;
+    this.setAtmosphere({ bg: 0x080604, density: 0.028, env: 0.35, hemi: [0x9a8a70, 0x140e08, 0.32] });
+    const sp = [
+      { pos: V3(0, 0, 10.4), up: Y_UP, look: V3(0, 0, -1) },
+      { pos: V3(0, 0, -14.6), up: Y_UP, look: V3(0, 0, -1) },
+      { pos: V3(0, 0, -42.2), up: Y_UP, look: V3(0, 0, -1) },
+    ];
+    this.spawn = sp[Math.min(this.cp, 2)];
+    this.bounds = { min: V3(-30, -12, -80), max: V3(30, 30, 30) };
+    this.hints = [
+      'Maya numbers are written with dots and bars: a dot is one, a bar is five, a shell is zero. The mural in the antechamber shows them all.',
+      'On the Counting Floor, step on the numbers in order — one, two, three… up to thirteen. The next number is always right beside you; any other stone falls.',
+      'The dart holes glow just before they fire. Cross a lane right after its volley. The alcoves between the lanes are safe.',
+      'Each alcove mural counts the offerings one god received. Set the dial beneath each god to that number.',
+      'Count carefully: the Sun received seven, the Moon four, the Jaguar six. Seven is a bar and two dots.',
+    ];
+    this.answers = [7, 4, 6];
+    this.buildAntechamber();
+    this.buildCountingFloor();
+    this.buildDartCorridor();
+    this.buildGodsChamber();
+    this.finish();
+  }
+  buildAntechamber() {
+    const T = this.T, tex = this.game.tex;
+    this.chamber({ x0: -5, z0: 0, x1: 5, z1: 12, h: 4.6, doors: { n: [{ a: 0, w: 2.4, h: 2.8 }], s: [{ a: 0, w: 2.4, h: 2.8 }] } });
+    // The way you came in, choked with rubble.
+    const r = this.rnd;
+    for (let i = 0; i < 4; i++) this.box(-1.2, 0, 12.6 + i * 0.45, 1.2, 0.3 * (i + 1), 13.05 + i * 0.45, T.stone);
+    this.box(-1.6, 0, 13.6, 1.6, 4, 14.2, T.dark);
+    for (let i = 0; i < 10; i++) { const x = (r() - 0.5) * 2.2, z = 12.1 + r() * 0.5, s = 0.25 + r() * 0.3; this.box(x - s, 0, z - s, x + s, 0.3 + r() * 1.8, z + s * 0.6, T.dark); }
+    this.block(-1.2, 0, 12, 1.2, 3, 12.6);
+    // Murals: the numerals, and the rule of the Counting Floor.
+    this.mural(V3(-4.97, 2.2, 6), V3(1, 0, 0), 7.2, 3.2, (x, w, h, pad) => {
+      x.textAlign = 'center';
+      x.font = `700 ${h * 0.085}px ${FONT_TEMPLE}`;
+      x.fillStyle = '#f0d9a8';
+      x.fillText('THE COUNT OF THE GODS', w / 2, pad + h * 0.08);
+      const s = h * 0.2;
+      for (let n = 0; n <= 13; n++) {
+        const row = n < 7 ? 0 : 1, col = n % 7;
+        const cx = w * (0.1 + col * 0.133), cy = pad + h * (0.2 + row * 0.29);
+        x.drawImage(tex.glyphCanvas(`num:${n}`, '#1d120a', 256), cx - s / 2, cy - s / 2, s, s);
+        x.font = `700 ${h * 0.06}px ${FONT_TEMPLE}`;
+        x.fillStyle = '#f0d9a8';
+        x.fillText(String(n), cx, cy + s * 0.6);
+      }
+      x.font = `600 ${h * 0.05}px ${FONT_TEMPLE}`;
+      x.fillText('A DOT IS ONE · A BAR IS FIVE · THE SHELL IS NOTHING', w / 2, h - pad - h * 0.05);
+    });
+    this.mural(V3(4.97, 2.2, 6), V3(-1, 0, 0), 6.0, 3.2, (x, w, h, pad) => {
+      x.textAlign = 'center';
+      x.font = `700 ${h * 0.08}px ${FONT_TEMPLE}`;
+      x.fillStyle = '#f0d9a8';
+      x.fillText('COUNT YOUR STEPS TO THE GODS', w / 2, pad + h * 0.08);
+      const s = h * 0.17;
+      for (let i = 0; i < 4; i++) {
+        const sx = w * (0.14 + i * 0.17), sy = h * (0.78 - i * 0.12);
+        x.fillStyle = 'rgba(20,12,6,0.55)';
+        x.fillRect(sx - w * 0.08, sy, w * 0.17, h * 0.8 - sy + h * 0.06);
+        x.drawImage(tex.glyphCanvas(`num:${i + 1}`, '#f0d9a8', 256), sx - s / 2, sy - s * 1.05, s, s);
+      }
+      x.drawImage(tex.glyphCanvas('sun', '#f2c05a', 256), w * 0.8 - s * 0.9, h * 0.3 - s * 0.9, s * 1.8, s * 1.8);
+      x.font = `600 ${h * 0.05}px ${FONT_TEMPLE}`;
+      x.fillStyle = '#f0d9a8';
+      x.fillText('ONE STEP AFTER ANOTHER · A FALSE STEP IS A FALL', w / 2, h - pad - h * 0.05);
+    }, { bg: '#2a5a54' });
+    this.box(-0.8, 0, 6.2, 0.8, 1.1, 7.8, T.carved);
+    this.glyphStone('ajaw', V3(0, 1.62, 7), V3(0, 1, 0), 1.2, { tablet: false, glow: 0.2 });
+    this.brazier(-3.9, 0, 1.4, { intensity: 14, distance: 12 });
+    this.brazier(3.9, 0, 1.4, { intensity: 14, distance: 12 });
+    this.brazier(-3.9, 0, 10.8, { light: false });
+    this.brazier(3.9, 0, 10.8, { light: false });
+    this.vines(-5, 0.05, 5, 0.05, 4.6, V3(0, 0, 1), 6, [0.8, 2]);
+    this.dust(V3(-5, 0.2, 0), V3(5, 4.5, 12), 90);
+  }
+  buildCountingFloor() {
+    const T = this.T, tex = this.game.tex;
+    const Z0 = -16, Z1 = -0.6;
+    this.chamber({ x0: -5, z0: Z0, x1: 5, z1: Z1, h: 5, floorBox: false, skip: ['s'], doors: { n: [{ a: 0, w: 2.4, h: 2.8 }] } });
+    // Extend the walls down into the pit.
+    this.box(-5.6, -6, Z0 - 0.6, -5, 0, Z1, T.dark);
+    this.box(5, -6, Z0 - 0.6, 5.6, 0, Z1, T.dark);
+    // Entry and exit ledges, the pit and its spikes.
+    this.box(-5, -6, -2.0, 5, 0, Z1, T.floor);
+    this.box(-5, -6, Z0, 5, 0, -13.3, T.floor);
+    this.box(-5, -6.5, -13.3, 5, -6, -2.0, T.dark);
+    const spikeGeo = new THREE.ConeGeometry(0.08, 0.9, 6);
+    for (let i = 0; i < 70; i++) {
+      const g = spikeGeo.clone();
+      g.translate((this.rnd() - 0.5) * 9.6, -5.55, -2.2 - this.rnd() * 10.9);
+      this.addStatic(g, T.bronze);
+    }
+    spikeGeo.dispose();
+    this.bones(-2, -6, -6.0);
+    this.bones(2.6, -10, -6.0);
+    this.killZone(V3(-5, -8, -13.3), V3(5, -2.2, -2.0), 'YOU MISCOUNTED — THE FLOOR GAVE WAY');
+    this.point(0, -4, -7.6, 0xff4a2a, 18, 12);
+    // The tiles: the path counts 1 → 13; every other stone is false.
+    const path = [[1, 0], [1, 1], [2, 1], [3, 1], [3, 2], [3, 3], [2, 3], [1, 3], [1, 4], [1, 5], [2, 5], [3, 5], [3, 6]];
+    const val = Array.from({ length: 7 }, () => new Array(5).fill(-1));
+    path.forEach(([c, r], i) => { val[r][c] = i + 1; });
+    const at = (c, r) => (r >= 0 && r < 7 && c >= 0 && c < 5 ? val[r][c] : -1);
+    const rnd = mulberry32(707);
+    for (let r = 0; r < 7; r++) {
+      for (let c = 0; c < 5; c++) {
+        if (val[r][c] > 0) continue;
+        for (let tries = 0; tries < 200; tries++) {
+          const v = Math.floor(rnd() * 20);
+          let bad = (r === 0 && v === 1);
+          for (let dr = -1; dr <= 1 && !bad; dr++) for (let dc = -1; dc <= 1; dc++) {
+            const n = at(c + dc, r + dr);
+            if (n > 0 && path[n - 1] && v === n + 1) bad = true;
+          }
+          if (!bad) { val[r][c] = v; break; }
+        }
+      }
+    }
+    this.tileVals = val;
+    this.tiles = [];
+    for (let r = 0; r < 7; r++) {
+      for (let c = 0; c < 5; c++) {
+        const x = -3.2 + 1.6 * c, z = -2.85 - 1.6 * r, v = val[r][c];
+        const face = tex.tileFace(`num:${v}`);
+        const top = this.own(new THREE.MeshStandardMaterial({ map: face.map, roughness: 0.85, emissive: 0xffa050, emissiveMap: face.em, emissiveIntensity: 0.16 }));
+        const safe = path.some(([pc, pr]) => pc === c && pr === r);
+        this.tiles.push(new CrumbleTile(this, { min: V3(x - 0.75, -0.45, z - 0.75), max: V3(x + 0.75, 0, z + 0.75), mat: T.stone, top, safe, delay: 0.35 }));
+      }
+    }
+    for (let r = 0; r < 6; r++) this.box(-4, -0.9, -2.85 - 1.6 * r - 0.85, 4, -0.5, -2.85 - 1.6 * r - 0.75, T.dark, { solid: false });
+    this.mural(V3(0, 2.4, Z1 - 0.03), V3(0, 0, -1), 3.4, 1.0, (x, w, h, pad) => {
+      x.textAlign = 'center';
+      x.font = `700 ${h * 0.26}px ${FONT_TEMPLE}`;
+      x.fillStyle = '#f0d9a8';
+      x.fillText('ONE · TWO · THREE …', w / 2, h * 0.6);
+    });
+    this.mural(V3(0, 3.6, Z0 + 0.03), V3(0, 0, 1), 3.0, 0.9, (x, w, h) => {
+      const s = h * 0.62;
+      for (let i = 0; i < 3; i++) x.drawImage(tex.glyphCanvas(`num:${11 + i}`, '#f0d9a8', 256), w * (0.25 + i * 0.25) - s / 2, h / 2 - s / 2, s, s);
+    });
+    this.torch(V3(-5, 2.6, -1.3), V3(1, 0, 0), { intensity: 9, distance: 10 });
+    this.torch(V3(5, 2.6, -14.6), V3(-1, 0, 0), { intensity: 9, distance: 10 });
+    this.torch(V3(5, 2.6, -1.3), V3(-1, 0, 0), { light: false });
+    this.torch(V3(-5, 2.6, -14.6), V3(1, 0, 0), { light: false });
+    this.bones(-3.6, -1.2);
+    new Trigger(this, { min: V3(-5, 0, -16), max: V3(5, 4, -13.4), onEnter: () => this.setCheckpoint(1) });
+  }
+  buildDartCorridor() {
+    const T = this.T, tex = this.game.tex;
+    const Z0 = -40, Z1 = -16.6;
+    this.box(-2.1, -0.5, Z0, 2.1, 0, Z1, T.floor);
+    this.box(-2.1, 0, Z0, -1.5, 3.4, Z1, T.carved);
+    this.alcoves = [-22.6, -28.2, -33.8];
+    this.wall('x', 1.5, 2.1, Z0, Z1, 0, 3.4, T.carved, this.alcoves.map((c) => ({ a0: c - 0.8, a1: c + 0.8, b0: -1, b1: 2.6 })));
+    this.corbelRoof(-2.1, Z0, 2.1, Z1, 3.4, { axis: 'z', steps: 3, rise: 0.35 });
+    // Alcoves with the murals that count each god's offerings.
+    const gods = [['sun', 'THE SUN', 'disc', 7], ['moon', 'THE MOON', 'gem', 4], ['jaguar', 'THE JAGUAR', 'feather', 6]];
+    this.alcoves.forEach((c, i) => {
+      this.box(2.1, -0.5, c - 1.4, 3.9, 0, c + 1.4, T.floor);
+      this.box(3.3, 0, c - 1.4, 3.9, 3.0, c + 1.4, T.stone);
+      this.box(2.1, 0, c - 1.4, 3.3, 3.0, c - 0.8, T.stone);
+      this.box(2.1, 0, c + 0.8, 3.3, 3.0, c + 1.4, T.stone);
+      this.box(2.1, 2.6, c - 0.8, 3.3, 3.0, c + 0.8, T.stone);
+      const [god, name, icon, n] = gods[i];
+      this.mural(V3(3.28, 1.45, c), V3(-1, 0, 0), 1.5, 2.0, (x, w, h, pad) => {
+        x.textAlign = 'center';
+        const s = w * 0.42;
+        x.drawImage(tex.glyphCanvas('cart', '#f0d9a8', 256), w / 2 - s * 0.55, pad + h * 0.02, s * 1.1, s * 1.1);
+        x.drawImage(tex.glyphCanvas(god, '#f2c05a', 256), w / 2 - s * 0.4, pad + h * 0.05, s * 0.8, s * 0.8);
+        x.font = `700 ${h * 0.055}px ${FONT_TEMPLE}`;
+        x.fillStyle = '#f0d9a8';
+        x.fillText(`${name} RECEIVED`, w / 2, pad + h * 0.43);
+        const per = 4, is = w * 0.19;
+        for (let k = 0; k < n; k++) {
+          const row = Math.floor(k / per), col = k % per, inRow = Math.min(per, n - row * per);
+          const cx = w / 2 + (col - (inRow - 1) / 2) * is * 1.12, cy = pad + h * (0.55 + row * 0.15);
+          x.drawImage(tex.glyphCanvas(icon, '#1d120a', 256), cx - is / 2, cy - is / 2, is, is);
+        }
+      }, { glow: 0.32 });
+      this.flame(V3(2.4, 0.05, c + 1.05), 0.45);
+    });
+    // Four lanes of darts, firing in a rolling wave.
+    this.lanes = [-19.8, -25.4, -31.0, -36.6];
+    this.darts = this.lanes.map((z, i) => new DartTrap(this, { origin: V3(-1.5, 0, z), dir: V3(1, 0, 0), length: 3.0, period: 1.9, warn: 0.6, offset: i * 0.47 }));
+    for (const z of this.lanes) this.box(1.45, 0, z - 0.7, 1.5, 1.9, z + 0.7, T.dark, { solid: false });
+    this.torch(V3(-1.5, 2.5, -17.6), V3(1, 0, 0), { intensity: 8, distance: 9 });
+    this.torch(V3(-1.5, 2.5, -39.0), V3(1, 0, 0), { intensity: 8, distance: 9 });
+    this.plaque(['THE CORRIDOR OF DARTS', 'the gods count the careless too'], V3(0, 2.25, Z1 - 0.04), V3(0, 0, -1), 2.4, 0.7, { size: 110 });
+    this.bones(0.6, -27.0);
+    this.bones(-0.8, -34.2);
+  }
+  buildGodsChamber() {
+    const T = this.T;
+    const Z0 = -54, Z1 = -40.6;
+    this.chamber({ x0: -6, z0: Z0, x1: 6, z1: Z1, h: 6.5, wall: T.carved, roofMat: T.stone, doors: { s: [{ a: 0, w: 2.4, h: 2.8 }], n: [{ a: 0, w: 3, h: 3.2 }] } });
+    new Trigger(this, { min: V3(-6, 0, -47), max: V3(6, 4, -40.6), onEnter: () => this.setCheckpoint(2) });
+    const gods = ['sun', 'moon', 'jaguar'];
+    const faces = Array.from({ length: 10 }, (_, n) => `num:${n}`);
+    this.dials = [-3.6, 0, 3.6].map((x, i) => new GlyphDial(this, { pos: V3(x, 0, -48.6), facing: V3(0, 0, 1), faces, value: 0, title: gods[i], radius: 0.78, height: 0.95, label: 'Turn the numeral dial', onChange: () => this.checkDials() }));
+    gods.forEach((g, i) => this.glyphStone(g, V3([-3.6, 0, 3.6][i], 5.5, Z0 + 0.01), V3(0, 0, 1), 1.3, { glow: 0.5 }));
+    this.door = new Door(this, { min: V3(-1.5, 0, Z0 - 0.45), max: V3(1.5, 3.2, Z0 - 0.15), slide: V3(0, -3.25, 0), mat: T.stone, strip: false, sound: 'stone', speed: 3 });
+    for (const x of [-4.6, 4.6]) this.pillar(x, -44.2, 0, 6.5, 0.9);
+    for (const x of [-4.6, 4.6]) this.pillar(x, -51.8, 0, 6.5, 0.9);
+    this.brazier(-5.2, 0, -48.6, { intensity: 16, distance: 14 });
+    this.brazier(5.2, 0, -48.6, { intensity: 16, distance: 14 });
+    this.serpentHead(V3(-2.6, 0, -53.0), V3(0, 0, 1), 0.65);
+    this.serpentHead(V3(2.6, 0, -53.0), V3(0, 0, 1), 0.65);
+    this.plaque(['THE CHAMBER OF THE THREE', 'give each god its due'], V3(0, 4.2, Z1 - 0.04), V3(0, 0, -1), 3.0, 0.8, { size: 110 });
+    // The way on.
+    this.box(-1.5, -0.5, -60, 1.5, 0, Z0 - 0.6, T.floor);
+    this.box(-2.1, 0, -60, -1.5, 3.4, Z0 - 0.6, T.stone);
+    this.box(1.5, 0, -60, 2.1, 3.4, Z0 - 0.6, T.stone);
+    this.box(-2.1, 3.4, -60, 2.1, 3.9, Z0 - 0.6, T.stone);
+    this.box(-2.1, 0, -60.6, 2.1, 3.9, -60, T.stone);
+    this.templeExit(V3(0, 1.5, -59.97), V3(0, 0, 1));
+    this.exitZone(V3(-1.5, 0, -59.6), V3(1.5, 3, -57));
+    this.dust(V3(-6, 0.2, -54), V3(6, 6, -40.6), 120);
+  }
+  checkDials() {
+    if (this.solved) return;
+    if (!this.dials.every((d, i) => d.value === this.answers[i])) return;
+    this.solved = true;
+    this.door.open();
+    this.game.audio.chime();
+    this.game.ui.toast('THE GODS ARE SATISFIED', 'good');
+  }
+  update() {
+    const z = this.game.player.pos.z;
+    if (z > -0.6) this.objective('Learn how the gods count, then go on to the Counting Floor.');
+    else if (z > -13.3) this.objective('Cross the Counting Floor: step on the numbers in order, one to thirteen.');
+    else if (z > -40.6) this.objective('Run the Corridor of Darts, and read the murals in its alcoves.');
+    else if (this.solved) this.objective('The door is open. Leave the Hall of Counting.');
+    else this.objective("Set each god's dial to the number of offerings it received.");
+  }
+}
+/* =====================================================================
+   LEVEL 8 — THE SERPENT'S EYE
+   Sunlight enters through slits in the walls. Bronze mirrors turn it, a
+   jade prism splits it, and one mirror rides a stone block that must be
+   pushed into place. Light both eyes of the serpent facade and its mouth
+   opens onto the Bridge of Blades.
+   ===================================================================== */
+class Level8 extends TempleLevel {
+  static meta = { name: "THE SERPENT'S EYE", ambient: 'sunlit', part: 2, seed: 8 };
+  build() {
+    const T = this.T;
+    this.setAtmosphere({ bg: 0x1c140c, density: 0.016, env: 0.5, hemi: [0xffe6c0, 0x3a2a18, 0.5] });
+    const sp = [
+      { pos: V3(3, 0, 4.2), up: Y_UP, look: V3(-0.35, 0, -1) },
+      { pos: V3(0, 0, -15.6), up: Y_UP, look: V3(0, 0, -1) },
+      { pos: V3(0, 0, -38.6), up: Y_UP, look: V3(0, 0, -1) },
+    ];
+    this.spawn = sp[Math.min(this.cp, 2)];
+    this.bounds = { min: V3(-30, -40, -90), max: V3(30, 30, 30) };
+    this.hints = [
+      `Sunlight enters through the slit in the west wall. Turn the bronze mirrors (${ctl('E', 'USE')}) to guide the beam into the jade eye on the north wall.`,
+      'A mirror only reflects from its polished face; light that strikes the stone back stops. The golden mirrors are set in stone.',
+      'In the Court of the Serpent the jade prism splits the light in two. Each beam must reach one eye of the serpent.',
+      'One mirror stands on a loose stone. Push it into the empty corner of the light path, then turn it.',
+      'On the Bridge of Blades, wait for a blade to swing past, then go. The cracked stones in the middle crumble — keep moving.',
+    ];
+    this.net = new BeamNetwork(this);
+    this.buildHallOfMirrors();
+    this.buildCourt();
+    this.buildBridge();
+    this.finish();
+  }
+  // Sunlight through a narrow slit in a wall, as a beam source.
+  sunSlit(x, z, y, dir) {
+    const T = this.T;
+    this.net.addSource(V3(x, y, z), dir);
+    const n = dir.clone().negate();
+    const glow = this.own(new THREE.MeshBasicMaterial({ color: new THREE.Color(3, 2.6, 1.8) }));
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.8), glow);
+    m.position.set(x + n.x * 0.5, y, z + n.z * 0.5);
+    this.orientPlane(m, dir, Y_UP);
+    this.scene.add(m);
+    const halo = this.own(new THREE.MeshBasicMaterial({ map: this.game.tex.glowSprite(), color: new THREE.Color(1.6, 1.2, 0.7), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+    const h = new THREE.Mesh(new THREE.PlaneGeometry(3, 3), halo);
+    h.position.set(x + dir.x * 0.05, y, z + dir.z * 0.05);
+    this.orientPlane(h, dir, Y_UP);
+    this.scene.add(h);
+    this.glyphStone('sun', V3(x + dir.x * 0.02, y + 1.1, z + dir.z * 0.02), dir, 0.8, { glow: 0.9, tablet: false });
+  }
+  // A skylight: real light from above plus a visible shaft.
+  skylight(x, z, yTop, { shadow = true, intensity = 260 } = {}) {
+    this.spot(V3(x, yTop + 4, z), V3(x, 0, z), { color: 0xffe8c4, intensity, angle: 0.62, penumbra: 0.7, distance: 40, shadow });
+    this.shaft(x, z, yTop, 0, 1.5, 0xfff0c8, 0.055);
+    const sky = this.own(new THREE.MeshBasicMaterial({ color: new THREE.Color(2.2, 2.0, 1.7) }));
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(3, 3), sky);
+    m.rotation.x = Math.PI / 2;
+    m.position.set(x, yTop + 1.9, z);
+    this.scene.add(m);
+  }
+  buildHallOfMirrors() {
+    const T = this.T, net = this.net;
+    // Walls: the west wall has the sun slit.
+    this.box(-10.6, -0.5, -14.6, 10.6, 0, 6.6, T.floor);
+    this.archWall('z', 6, 6.6, -10.6, 10.6, 0, 9, T.stone, []);
+    this.archWall('z', -14.6, -14, -10.6, 10.6, 0, 9, T.carved, [{ a: 0, w: 3, h: 3.4, steps: 4 }]);
+    this.wall('x', 10, 10.6, -14, 6, 0, 9, T.stone);
+    this.wall('x', -10.6, -10, -14, 6, 0, 9, T.stone, [{ a0: 1.7, a1: 2.3, b0: 0.95, b1: 1.75 }]);
+    this.corbelRoof(-10.6, -14.6, 10.6, 6.6, 9, { axis: 'z', steps: 4, hole: { x0: -1.5, z0: -5.5, x1: 1.5, z1: -2.5 } });
+    this.skylight(0, -4, 11.4);
+    this.sunSlit(-10.3, 2, 1.35, V3(1, 0, 0));
+    // Mirrors. The two golden ones are fixed; the bronze ones turn.
+    const A = this.cp >= 1;
+    const mk = (x, z, state, sol, fixed = false) => new SunMirror(this, net, { pos: V3(x, 0, z), state: A ? sol : state, fixed });
+    this.mA = [mk(-8, 2, 2, 2, true), mk(-8, -6, 1, 0), mk(-4, -6, 0, 2), mk(-4, -10, 0, 0, true), mk(4, -10, 1, 2), mk(0, -6, 3, 3), mk(-8, -10, 1, 1)];
+    // The jade eye of Kinich Ahau on the north wall.
+    this.box(2.6, 0.2, -14, 5.4, 2.6, -13.75, T.red, { solid: false });
+    this.glyphStone('ajaw', V3(4, 2.5, -13.74), V3(0, 0, 1), 1.1, { glow: 0.2 });
+    this.solvedA = A;
+    this.eyeA = new BeamReceiver(this, net, { pos: V3(4, 1.35, -13.55), radius: 0.3, onChange: (on) => { if (on) this.solveA(); } });
+    this.doorA = new Door(this, { min: V3(-1.5, 0, -14.45), max: V3(1.5, 3.4, -14.15), slide: V3(0, -3.45, 0), mat: T.carved, strip: false, sound: 'stone', speed: 3 });
+    if (A) this.doorA.snap(true);
+    // Dressing.
+    for (const z of [3.5, -2, -7.5, -12.4]) this.pillar(8.9, z, 0, 9, 1.0);
+    for (const z of [-2, -12.4]) this.pillar(-9.0, z, 0, 9, 0.9);
+    this.brazier(6.6, 0, 4.6, { intensity: 14, distance: 13 });
+    this.brazier(-6.6, 0, -12.6, { light: false });
+    this.plaque(['THE HALL OF MIRRORS', 'what the sun sees, the serpent sees'], V3(0, 6.2, 5.97), V3(0, 0, -1), 4, 1.0, { size: 110 });
+    this.mural(V3(-9.97, 3.6, -6), V3(1, 0, 0), 5, 2.4, (x, w, h, pad) => {
+      const tex = this.game.tex, s = h * 0.36;
+      x.textAlign = 'center';
+      x.font = `700 ${h * 0.09}px ${FONT_TEMPLE}`;
+      x.fillStyle = '#f0d9a8';
+      x.fillText('THE SUN WALKS · THE BRONZE TURNS', w / 2, pad + h * 0.1);
+      x.drawImage(tex.glyphCanvas('sun', '#f2c05a', 256), w * 0.15 - s / 2, h * 0.55 - s / 2, s, s);
+      x.strokeStyle = '#f2c05a'; x.lineWidth = 6;
+      x.beginPath(); x.moveTo(w * 0.24, h * 0.55); x.lineTo(w * 0.5, h * 0.55); x.lineTo(w * 0.5, h * 0.3); x.lineTo(w * 0.78, h * 0.3); x.stroke();
+      x.fillStyle = '#1d120a';
+      for (const [px, py] of [[0.5, 0.55], [0.5, 0.3]]) { x.save(); x.translate(w * px, h * py); x.rotate(Math.PI / 4); x.fillRect(-s * 0.3, -s * 0.06, s * 0.6, s * 0.12); x.restore(); }
+      x.drawImage(tex.glyphCanvas('ajaw', '#3dd68a', 256), w * 0.85 - s / 2, h * 0.3 - s / 2, s, s);
+    }, { bg: '#2a5a54' });
+    this.dust(V3(-10, 0.2, -14), V3(10, 8.5, 6), 140, 0xfff0d0);
+  }
+  solveA() {
+    if (this.solvedA) return;
+    this.solvedA = true;
+    this.doorA.open();
+    this.game.ui.toast('THE SUN GOD SEES', 'good');
+  }
+  buildCourt() {
+    const T = this.T, net = this.net;
+    const B = this.cp >= 2;
+    this.box(-8.6, -0.5, -34.6, 8.6, 0, -14.6, T.floor);
+    this.wall('x', 8, 8.6, -34, -14.6, 0, 10, T.stone);
+    this.wall('x', -8.6, -8, -34, -14.6, 0, 10, T.stone, [{ a0: -20.4, a1: -19.6, b0: 2.35, b1: 3.25 }]);
+    this.archWall('z', -34.6, -34, -8.6, 8.6, 0, 10, T.carved, [{ a: 0, w: 2.6, h: 2.2, steps: 0 }], { lintel: false });
+    this.corbelRoof(-8.6, -34.6, 8.6, -14.6, 10, { axis: 'z', steps: 4, hole: { x0: -1.5, z0: -26, x1: 1.5, z1: -23 } });
+    this.skylight(0, -24.5, 12.4, { shadow: false, intensity: 200 });
+    this.sunSlit(-8.3, -20, 2.8, V3(1, 0, 0));
+    this.prism = new BeamPrism(this, net, { pos: V3(0, 0, -20), height: 2.8 });
+    const mk = (x, z, state, sol) => new SunMirror(this, net, { pos: V3(x, 0, z), state: B ? sol : state, height: 2.8 });
+    this.mB = [mk(0, -28, 0, 3), mk(-2, -28, 0, 1), mk(0, -18, 0, 1)];
+    this.block = new PushBlock(this, { pos: B ? V3(2, 0.5, -18) : V3(4, 0.5, -26), size: V3(1.6, 1.0, 1.6) });
+    this.blockMirror = new SunMirror(this, net, { pos: V3(4, 0, -26), state: B ? 2 : 0, carrier: this.block, height: 1.8 });
+    // The serpent facade: its mouth is the door, its eyes take the light.
+    this.solvedB = B;
+    this.eyes = [-2, 2].map((x) => new BeamReceiver(this, net, { pos: V3(x, 2.8, -33.35), radius: 0.32, onChange: () => this.checkEyes() }));
+    for (const sx of [-1, 1]) {
+      this.box(sx * 1.3, 0, -34, sx * 2.0, 2.2, -33.5, T.red);
+      this.box(sx * 1.4, 3.15, -34, sx * 2.8, 3.5, -33.35, T.stone);
+      this.box(sx * 2.45, 2.2, -34, sx * 3.2, 3.15, -33.5, T.carved, { solid: false });
+      this.box(sx * 1.2, 2.2, -34, sx * 1.55, 3.15, -33.5, T.carved, { solid: false });
+    }
+    this.box(-3.4, 2.2, -34, 3.4, 2.5, -33.4, T.red);
+    this.box(-0.9, 2.5, -34, 0.9, 4.2, -33.2, T.carved);
+    this.box(-0.6, 4.2, -34, 0.6, 4.8, -33.4, T.stone, { solid: false });
+    for (const fx of [-1.0, -0.45, 0.45, 1.0]) {
+      const f = new THREE.ConeGeometry(0.08, 0.34, 6);
+      f.rotateX(Math.PI);
+      f.translate(fx, 2.03, -33.55);
+      this.addStatic(f, T.bone);
+    }
+    for (let i = 0; i < 9; i++) {
+      const g = new THREE.BoxGeometry(0.5, 3.2, 0.12);
+      g.translate(0, 1.6, 0);
+      g.applyMatrix4(new THREE.Matrix4().makeRotationZ((i - 4) * 0.28));
+      g.translate(0, 4.6, -33.9);
+      this.addStatic(g, i % 2 ? T.teal : T.jade);
+    }
+    this.mouth = new Door(this, { min: V3(-1.3, 0, -34.45), max: V3(1.3, 2.2, -34.15), slide: V3(0, -2.25, 0), mat: T.dark, strip: false, sound: 'stone', speed: 2.6 });
+    if (B) this.mouth.snap(true);
+    new Trigger(this, { min: V3(-8, 0, -20), max: V3(8, 4, -14.6), onEnter: () => this.setCheckpoint(1) });
+    for (const [x, z] of [[-6.6, -16.4], [6.6, -16.4], [-6.6, -32.4], [6.6, -32.4]]) this.pillar(x, z, 0, 10, 1.0);
+    this.torch(V3(8, 2.6, -24), V3(-1, 0, 0), { intensity: 10, distance: 12 });
+    this.torch(V3(-8, 2.0, -27), V3(1, 0, 0), { light: false });
+    this.plaque(['THE COURT OF THE SERPENT', 'two eyes · one sun'], V3(0, 6.5, -14.63), V3(0, 0, -1), 3.6, 0.9, { size: 110 });
+    this.dust(V3(-8, 0.2, -34), V3(8, 9.5, -14.6), 130, 0xfff0d0);
+  }
+  checkEyes() {
+    if (this.solvedB || !this.eyes.every((e) => e.lit)) return;
+    this.solvedB = true;
+    this.mouth.open();
+    this.game.audio.rumble(2.5);
+    this.game.player.shake = 1.2;
+    this.game.ui.toast('THE SERPENT OPENS ITS MOUTH', 'good');
+  }
+  buildBridge() {
+    const T = this.T;
+    // Passage through the mouth.
+    this.box(-1.9, -0.5, -37.6, 1.9, 0, -34.6, T.floor);
+    this.box(-1.9, 0, -37, -1.3, 2.8, -34.6, T.dark);
+    this.box(1.3, 0, -37, 1.9, 2.8, -34.6, T.dark);
+    this.box(-1.9, 2.2, -37, 1.9, 2.8, -34.6, T.dark);
+    // The chasm hall.
+    const Z0 = -66, Z1 = -37;
+    this.wall('x', -6.6, -6, Z0, Z1, -30, 9, T.dark);
+    this.wall('x', 6, 6.6, Z0, Z1, -30, 9, T.dark);
+    this.archWall('z', Z1, Z1 + 0.6, -6.6, 6.6, 0, 9, T.dark, [{ a: 0, w: 2.6, h: 2.2, steps: 0 }], { lintel: false });
+    this.box(-6.6, -30, Z1, 6.6, 0, Z1 + 0.6, T.dark);
+    this.archWall('z', Z0 - 0.6, Z0, -6.6, 6.6, 0, 9, T.dark, [{ a: 0, w: 2.4, h: 2.8 }]);
+    this.box(-6.6, -30, Z0 - 0.6, 6.6, 0, Z0, T.dark);
+    this.corbelRoof(-6.6, Z0 - 0.6, 6.6, Z1 + 0.6, 9, { axis: 'z', steps: 4, mat: T.dark });
+    this.box(-6, -0.5, -40, 6, 0, Z1, T.floor);
+    this.box(-6, -6, -40.4, 6, 0, -40, T.dark);
+    this.box(-6, -0.5, Z0, 6, 0, -62, T.floor);
+    this.box(-6, -6, -62, 6, 0, -61.6, T.dark);
+    this.box(-6, -31, Z0, 6, -30, Z1, T.dark);
+    this.killZone(V3(-6, -40, -62), V3(6, -3, -40), 'YOU FELL INTO THE DARK');
+    // The bridge, with a cracked section in the middle.
+    this.box(-0.9, -0.5, -49.3, 0.9, 0, -40, T.stone);
+    this.box(-0.9, -0.5, -62, 0.9, 0, -52.5, T.stone);
+    for (const z of [-49.3, -50.9]) new CrumbleTile(this, { min: V3(-0.9, -0.5, z - 1.6), max: V3(0.9, 0, z), mat: T.mossy, delay: 0.45, regen: 3 });
+    for (let z = -41; z > -62; z -= 3) this.box(-0.6, -6, z - 0.4, 0.6, -0.5, z + 0.4, T.dark, { solid: false });
+    // Four swinging blades.
+    this.blades = [[-43.4, 2.6, 0], [-47.2, 3.0, 1.7], [-55.4, 2.8, 3.4], [-59.0, 2.4, 0.9]].map(([z, period, phase]) => new Pendulum(this, { pivot: V3(0, 7.6, z), axis: 'z', length: 6.6, amp: 0.75, period, phase }));
+    for (const b of this.blades) this.box(-0.3, 7.6, b.pivot.z - 0.3, 0.3, 9.4, b.pivot.z + 0.3, T.bronze, { solid: false });
+    this.point(0, -14, -51, 0xff3a1a, 60, 30);
+    new ParticleField(this, { count: 160, min: V3(-6, -20, -62), max: V3(6, -2, -40), color: 0xff8a5a, size: 0.06, intensity: 1.4, opacity: 0.6, drift: V3(0, 0.5, 0), jitter: 0.1 });
+    new Trigger(this, { min: V3(-6, 0, -40), max: V3(6, 4, -37.6), onEnter: () => this.setCheckpoint(2) });
+    this.torch(V3(-6, 2.4, -38.6), V3(1, 0, 0), { intensity: 9, distance: 10 });
+    this.torch(V3(6, 2.4, -63.6), V3(-1, 0, 0), { light: false });
+    this.plaque(['THE BRIDGE OF BLADES'], V3(0, 4.2, Z1 - 0.03), V3(0, 0, -1), 3.2, 0.6, { size: 130 });
+    // Exit.
+    this.box(-1.2, -0.5, -70, 1.2, 0, Z0 - 0.6, T.floor);
+    this.box(-1.8, 0, -70, -1.2, 3.4, Z0 - 0.6, T.dark);
+    this.box(1.2, 0, -70, 1.8, 3.4, Z0 - 0.6, T.dark);
+    this.box(-1.8, 3.4, -70, 1.8, 3.9, Z0 - 0.6, T.dark);
+    this.box(-1.8, 0, -70.6, 1.8, 3.9, -70, T.dark);
+    this.templeExit(V3(0, 1.5, -69.97), V3(0, 0, 1));
+    this.exitZone(V3(-1.2, 0, -69.6), V3(1.2, 3, -67.4));
+  }
+  update() {
+    const z = this.game.player.pos.z;
+    if (z > -14.6) this.objective(this.solvedA ? 'The way is open. Go on to the Court of the Serpent.' : 'Turn the bronze mirrors to guide the sunlight into the jade eye.');
+    else if (z > -34.6) this.objective(this.solvedB ? 'The serpent has opened its mouth. Go through.' : `Light both eyes of the serpent (${this.eyes.filter((e) => e.lit).length} / 2). The prism splits the sun in two.`);
+    else this.objective('Cross the Bridge of Blades.');
+  }
+}
+/* =====================================================================
+   LEVEL 9 — THE TRIAL OF TRAPS
+   A gauntlet in the tomb beneath the temple: a hall of swinging blades,
+   a hall of fire, a chamber whose ceiling falls when the Heart of Jade
+   is taken, and a long stair down which a great stone rolls.
+   ===================================================================== */
+class Level9 extends TempleLevel {
+  static meta = { name: 'THE TRIAL OF TRAPS', ambient: 'tomb', part: 2, seed: 9 };
+  build() {
+    const T = this.T;
+    // The heart only stays yours once you are past the falling sky, and
+    // placing it always re-arms the stone.
+    if (this.cp < 3) this.carry.found = [];
+    else this.carry.found = ['heart'];
+    this.carry.placed = [];
+    this.relicKinds = ['heart'];
+    this.setAtmosphere({ bg: 0x060403, density: 0.032, env: 0.3, hemi: [0x7a6a58, 0x0a0604, 0.28] });
+    const sp = [
+      { pos: V3(0, 0, 4.4), up: Y_UP, look: V3(0, 0, -1) },
+      { pos: V3(0, 0, -23.6), up: Y_UP, look: V3(0, 0, -1) },
+      { pos: V3(0, 0, -41.6), up: Y_UP, look: V3(0, 0, -1) },
+      { pos: V3(-1.5, 0, -52.4), up: Y_UP, look: V3(1, 0, -0.6) },
+    ];
+    this.spawn = sp[Math.min(this.cp, 3)];
+    this.bounds = { min: V3(-30, -30, -120), max: V3(30, 30, 30) };
+    this.hints = [
+      'Each blade swings in its own rhythm, and you can stand safely between two of them. Go when the next blade swings away.',
+      'The fire vents burn in two alternating rows. Cross a row the moment its flames die, then wait in the gap for the next.',
+      'Taking the Heart of Jade wakes the Chamber of the Falling Sky. Run for the north door the moment it opens.',
+      `When you lay the Heart on its altar, run down the stair — ${ctl('hold SHIFT to sprint', 'push the stick all the way to sprint')} — and turn right into the side passage at the bottom.`,
+    ];
+    this.buildEntry();
+    this.buildBlades();
+    this.buildFire();
+    this.buildFallingSky();
+    this.buildRun();
+    this.finish();
+  }
+  buildEntry() {
+    const T = this.T;
+    this.chamber({ x0: -3, z0: 0, x1: 3, z1: 6, h: 4, wall: T.dark, doors: { n: [{ a: 0, w: 2.4, h: 2.8 }] } });
+    this.plaque(['THE TRIAL OF TRAPS', 'only the swift and the patient pass'], V3(0, 2.0, 5.97), V3(0, 0, -1), 3.2, 1.0, { size: 110, glow: 0.3 });
+    this.torch(V3(-3, 2.4, 3), V3(1, 0, 0), { intensity: 9, distance: 10 });
+    this.torch(V3(3, 2.4, 3), V3(-1, 0, 0), { light: false });
+    this.bones(1.8, 1.2);
+    this.glyphStone('skull', V3(0, 3.35, 0.02), V3(0, 0, 1), 0.7, { glow: 0.5, color: 0xff6040 });
+  }
+  buildBlades() {
+    const T = this.T;
+    const Z0 = -22, Z1 = -0.6;
+    this.chamber({ x0: -1.8, z0: Z0, x1: 1.8, z1: Z1, h: 7.5, wall: T.dark, skip: ['s'], doors: { n: [{ a: 0, w: 2.4, h: 2.8 }] }, roofSteps: 3 });
+    const specs = [[-3.4, 2.2, 0.0], [-6.0, 2.6, 1.9], [-8.6, 2.0, 3.7], [-11.2, 2.8, 0.9], [-13.8, 2.3, 2.6], [-16.4, 2.5, 4.4], [-19.0, 2.1, 1.2]];
+    this.blades = specs.map(([z, period, phase]) => new Pendulum(this, { pivot: V3(0, 7.0, z), axis: 'z', length: 6.0, amp: 0.62, period, phase }));
+    for (const b of this.blades) {
+      const z = b.pivot.z;
+      this.box(-1.8, 0.15, z - 0.06, -1.74, 4.2, z + 0.06, T.void, { solid: false, shadow: false });
+      this.box(1.74, 0.15, z - 0.06, 1.8, 4.2, z + 0.06, T.void, { solid: false, shadow: false });
+      this.box(-0.25, 7.0, z - 0.25, 0.25, 8.6, z + 0.25, T.bronze, { solid: false });
+    }
+    this.torch(V3(-1.8, 2.6, -2.0), V3(1, 0, 0), { intensity: 8, distance: 10 });
+    this.torch(V3(1.8, 2.6, -9.9), V3(-1, 0, 0), { intensity: 8, distance: 10 });
+    this.torch(V3(-1.8, 2.6, -15.1), V3(1, 0, 0), { light: false });
+    this.torch(V3(1.8, 2.6, -20.6), V3(-1, 0, 0), { intensity: 8, distance: 10 });
+    this.bones(-0.9, -9.9);
+    this.bones(0.8, -14.9);
+  }
+  buildFire() {
+    const T = this.T;
+    const Z0 = -40, Z1 = -22.6;
+    this.chamber({ x0: -5, z0: Z0, x1: 5, z1: Z1, h: 6, wall: T.dark, skip: ['s'], doors: { n: [{ a: 0, w: 2.4, h: 2.8 }] } });
+    new Trigger(this, { min: V3(-5, 0, -25), max: V3(5, 4, -22.6), onEnter: () => this.setCheckpoint(1) });
+    this.rows = [-26.5, -30, -33.5, -37];
+    this.jets = [];
+    this.rows.forEach((z, r) => {
+      for (const x of [-4, -2, 0, 2, 4]) this.jets.push(new FlameJet(this, { pos: V3(x, 0, z), period: 4, on: 1.3, offset: r % 2 ? 2.0 : 0, warn: 0.6, height: 3.0, radius: 1.0 }));
+      this.box(-5, 0.0, z - 0.03, -4.95, 3.5, z + 0.03, T.void, { solid: false, shadow: false });
+    });
+    this.fireLight = this.point(0, 2.5, -31.8, 0xff7a2a, 0, 22);
+    this.door = new Door(this, { min: V3(-1.2, 0, Z0 - 0.45), max: V3(1.2, 2.8, Z0 - 0.15), slide: V3(0, -2.85, 0), mat: T.carved, strip: false, sound: 'stone', speed: 1.6 });
+    this.lever = new StoneLever(this, { pos: V3(3.4, 1.1, Z0), normal: V3(0, 0, 1), label: 'Pull the lever', onPull: () => { this.door.open(); this.game.ui.toast('THE WAY OPENS', 'good'); } });
+    this.torch(V3(-5, 2.6, -39), V3(1, 0, 0), { intensity: 8, distance: 10 });
+    this.plaque(['THE HALL OF FIRE'], V3(0, 4.4, Z1 - 0.03), V3(0, 0, -1), 2.6, 0.55, { size: 130 });
+  }
+  buildFallingSky() {
+    const T = this.T;
+    const Z0 = -50, Z1 = -40.6;
+    this.chamber({ x0: -4, z0: Z0, x1: 4, z1: Z1, h: 6.4, wall: T.carved, skip: ['s'], doors: { n: [{ a: 0, w: 2.4, h: 2.8 }] }, roof: false });
+    this.box(-4.6, 6.4, Z0 - 0.6, 4.6, 7.2, Z1, T.dark);
+    new Trigger(this, { min: V3(-4, 0, -43), max: V3(4, 4, -40.6), onEnter: () => this.setCheckpoint(2) });
+    this.box(-0.6, 0, -45.9, 0.6, 1.0, -44.7, T.carved);
+    this.box(-0.75, 1.0, -46.05, 0.75, 1.12, -44.55, T.gold, { solid: false });
+    this.ceilY = 6.35;
+    this.ceiling = new THREE.Mesh(new THREE.BoxGeometry(8, 0.5, 9.4), T.carved);
+    this.ceiling.position.set(0, this.ceilY + 0.25, (Z0 + Z1) / 2);
+    this.ceiling.castShadow = true;
+    this.scene.add(this.ceiling);
+    for (let i = 0; i < 4; i++) {
+      const s = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.5, 6), T.bronze);
+      s.rotation.x = Math.PI;
+      s.position.set(-3 + i * 2, -0.45, 0);
+      this.ceiling.add(s);
+    }
+    this.skyZone = this.killZone(V3(-4, 50, Z0), V3(4, 60, Z1), 'CRUSHED BY THE FALLING SKY');
+    this.exitDoor = new Door(this, { min: V3(-1.2, 0, Z0 - 0.45), max: V3(1.2, 2.8, Z0 - 0.15), slide: V3(0, -2.85, 0), mat: T.carved, strip: false, sound: 'stone', speed: 2.4 });
+    this.torch(V3(-4, 2.4, -45.3), V3(1, 0, 0), { intensity: 10, distance: 11 });
+    this.torch(V3(4, 2.4, -45.3), V3(-1, 0, 0), { light: false });
+    this.plaque(['THE FALLING SKY', 'what you take, the tomb takes back'], V3(0, 3.6, Z0 + 0.03), V3(0, 0, 1), 3, 0.8, { size: 110 });
+    this.skyFalling = false;
+    if (this.cp >= 3) {
+      this.ceilY = 0.6;
+      this.ceiling.position.y = this.ceilY + 0.25;
+      this.door.snap(false);
+      this.exitDoor.snap(false);
+    } else {
+      new Relic(this, { kind: 'heart', pos: V3(0, 1.75, -45.3), beacon: false, onTake: () => this.dropSky() });
+    }
+  }
+  dropSky() {
+    this.skyFalling = true;
+    this.door.close();
+    this.exitDoor.open();
+    this.game.audio.rumble(3);
+    this.game.player.shake = 1.5;
+    this.game.ui.toast('THE SKY IS FALLING — RUN!', 'warn', 3);
+    this.dust(V3(-4, 0.5, -50), V3(4, 6, -40.6), 120, 0xc8b898);
+  }
+  buildRun() {
+    const T = this.T;
+    // The dais with the altar of the Heart.
+    this.chamber({ x0: -3, z0: -56, x1: 3, z1: -50.6, h: 6, wall: T.dark, skip: ['s', 'n'], roof: false });
+    this.box(-3.6, 6, -56.6, 3.6, 6.6, -50.6, T.dark);
+    this.box(-1.0, 6.0, -53.4, 1.0, 6.6, -51.0, T.void, { solid: false, shadow: false });
+    new Trigger(this, { min: V3(-3, 0, -55), max: V3(3, 4, -51.2), onEnter: () => { if (this.found('heart')) this.setCheckpoint(3); } });
+    this.box(2.0, 0, -54.4, 3, 1.0, -52.8, T.carved);
+    const altar = new THREE.Group();
+    altar.position.set(2.0, 1.55, -53.6);
+    this.scene.add(altar);
+    this.box(2.6, 1.0, -54.3, 3, 2.2, -52.9, T.carved, { solid: false });
+    this.heartShrine = new OfferingShrine(this, { parent: altar, slots: [{ kind: 'heart', pos: V3(0, 0, 0), normal: V3(-1, 0, 0) }], onComplete: () => this.startRun() });
+    this.plaque(['THE ALTAR OF THE STONE'], V3(2.98, 3.0, -53.6), V3(-1, 0, 0), 2.2, 0.5, { size: 120 });
+    this.torch(V3(-3, 2.4, -53.6), V3(1, 0, 0), { intensity: 9, distance: 10 });
+    this.gate = new Door(this, { min: V3(-2, 0, -56.45), max: V3(2, 3.2, -56.15), slide: V3(0, -3.25, 0), mat: T.dark, strip: false, sound: 'stone', speed: 1.0 });
+    this.box(-3.6, 0, -56.6, -2, 6, -56, T.dark);
+    this.box(2, 0, -56.6, 3.6, 6, -56, T.dark);
+    this.box(-2, 3.2, -56.6, 2, 6, -56, T.dark);
+    // The long stair down.
+    const floorY = (z) => (z > -58 ? 0 : Math.max(-8.8, -0.2 * (-58 - z)));
+    this.box(-2, -0.5, -58, 2, 0, -56, T.floor);
+    for (let i = 0; i < 44; i++) {
+      const za = -58 - i, zb = -59 - i, y = -0.2 * (i + 1);
+      this.box(-2, y - 0.5, zb, 2, y, za, T.floor);
+      this.box(-2.6, y - 0.5, zb, -2, y + 4.5, za, T.dark);
+      if (!(zb < -98.4 && za > -101.6)) this.box(2, y - 0.5, zb, 2.6, y + 4.5, za, T.dark);
+      this.box(-2.6, y + 4.5, zb, 2.6, y + 5.0, za, T.dark);
+    }
+    this.box(-2.6, -9.5, -102.6, 2.6, -4, -102, T.dark);
+    // The side passage and the way out.
+    this.box(2, -9.3, -101.4, 9, -8.8, -98.6, T.floor);
+    this.box(2, -8.8, -102, 9, -5.4, -101.4, T.dark);
+    this.box(2, -8.8, -98.6, 9, -5.4, -98, T.dark);
+    this.box(2, -5.4, -102, 9, -4.9, -98, T.dark);
+    this.box(9, -8.8, -102, 9.6, -4.9, -98, T.dark);
+    this.templeExit(V3(8.97, -7.4, -100), V3(-1, 0, 0), ['ONWARD', 'to the heart of the world']);
+    this.exitZone(V3(4.5, -9, -101.4), V3(8.8, -6, -98.6));
+    for (const z of [-66, -80, -94]) this.torch(V3(-2, floorY(z) + 2.6, z), V3(1, 0, 0), { intensity: 8, distance: 11, light: z !== -80 });
+    this.boulder = new Boulder(this, { start: V3(0, 7.5, -52.2), endZ: -100.4, radius: 1.5, floorY, accel: 3, vmax: 7, onCrash: () => this.game.ui.toast('THE STONE IS STILL', 'good') });
+  }
+  startRun() {
+    this.gate.open();
+    this.game.audio.rumble(1.4);
+    this.game.player.shake = 1;
+    this.game.ui.toast('RUN!', 'warn', 3);
+    this.runT = 1.0;
+  }
+  update(dt) {
+    if (this.runT > 0) { this.runT -= dt; if (this.runT <= 0) this.boulder.release(); }
+    // The falling sky.
+    if (this.skyFalling && this.ceilY > 0.6) {
+      this.ceilY = Math.max(0.6, this.ceilY - dt * 0.9);
+      this.ceiling.position.y = this.ceilY + 0.25;
+      this.skyZone.min.y = this.ceilY - 0.45;
+      this.skyZone.max.y = this.ceilY + 1;
+      this.game.player.shake = Math.max(this.game.player.shake, 0.15);
+    }
+    // Fire light follows the flames.
+    let k = 0;
+    for (const j of this.jets) k += j.k;
+    this.fireLight.intensity = 5 + k * 1.1;
+    const z = this.game.player.pos.z, y = this.game.player.pos.y;
+    if (z > -22.6) this.objective('Pass the Hall of Blades.');
+    else if (z > -40.6) this.objective(this.door.target ? 'The way is open. Go on.' : 'Cross the Hall of Fire and pull the lever on the far wall.');
+    else if (z > -50.6) this.objective(this.found('heart') ? 'The sky is falling — get out through the north door!' : 'Take the Heart of Jade from the altar.');
+    else if (!this.heartShrine.complete && !this.heartShrine.queue.length) this.objective('Lay the Heart of Jade on the Altar of the Stone.');
+    else if (y > -8) this.objective('RUN! Down the stair and into the side passage at the bottom.');
+    else this.objective('Into the side passage — out of the stone\'s path.');
+  }
+}
+/* =====================================================================
+   LEVEL 10 — THE FIVE DIRECTIONS
+   The heart of the pyramid: a World Tree with a niche for each direction.
+   Red East (dawn light and mirrors), white North (sums in bars and dots),
+   black West (crumbling stones and darts in the dark), yellow South (push
+   the blocks onto the plates). With four stones set, steps rise around
+   the tree to the green heart of the world — and the temple lets you go.
+   ===================================================================== */
+class Level10 extends TempleLevel {
+  static meta = { name: 'THE FIVE DIRECTIONS', ambient: 'sanctum', part: 2, seed: 10 };
+  build() {
+    const T = this.T;
+    this.relicKinds = ['east', 'north', 'west', 'south', 'center'];
+    this.setAtmosphere({ bg: 0x07060a, density: 0.018, env: 0.35, hemi: [0x8a8aa8, 0x1a120a, 0.34] });
+    this.skyDome({ top: 0x050a1c, horizon: 0x1c2440, glow: 0x5a6a9a, moon: V3(-0.3, 0.75, 0.5), stars: 1, moonSize: 0.0009 });
+    this.spawn = { pos: V3(0, 0, 6.6), up: Y_UP, look: V3(0, 0.15, -1) };
+    this.bounds = { min: V3(-60, -40, -60), max: V3(60, 80, 60) };
+    this.hints = [
+      'Each passage leads to one direction and its stone: red East, white North, black West, yellow South. Their colours glow above the doorways.',
+      'East: guide the dawn light into the eye to lift the cage. North: each dial wants the sum carved above it, written in bars and dots.',
+      'West: the stones crumble under you and darts cross the dark. Watch the dart holes glow, then keep moving.',
+      'South: push both carved blocks onto the sun plates. A block pushed against a wall is stuck — R resets the chamber.',
+      'When the four stones are set, steps rise around the World Tree. Climb them to the green heart of the world and set it in the tree.',
+    ];
+    this.finale = null;
+    this.net = new BeamNetwork(this, { color: 0xffc890 });
+    this.buildHub();
+    this.buildEast();
+    this.buildNorth();
+    this.buildWest();
+    this.buildSouth();
+    this.buildExterior();
+    this.finish();
+  }
+  // A corridor between the hub and a chamber, along an axis.
+  passage(axis, a0, a1) {
+    const T = this.T;
+    if (axis === 'x') {
+      this.box(a0, -0.5, -2.1, a1, 0, 2.1, T.floor);
+      this.box(a0, 0, -2.1, a1, 3.6, -1.5, T.stone);
+      this.box(a0, 0, 1.5, a1, 3.6, 2.1, T.stone);
+      this.corbelRoof(a0, -2.1, a1, 2.1, 3.6, { axis: 'z', steps: 3, rise: 0.3 });
+    } else {
+      this.box(-2.1, -0.5, a0, 2.1, 0, a1, T.floor);
+      this.box(-2.1, 0, a0, -1.5, 3.6, a1, T.stone);
+      this.box(1.5, 0, a0, 2.1, 3.6, a1, T.stone);
+      this.corbelRoof(-2.1, a0, 2.1, a1, 3.6, { axis: 'x', steps: 3, rise: 0.3 });
+    }
+  }
+  // A carved cage over a stone's altar; lifts away when the puzzle is solved.
+  cage(x, z, kind) {
+    const T = this.T;
+    this.box(x - 0.7, 0, z - 0.7, x + 0.7, 1.0, z + 0.7, T.carved);
+    this.box(x - 0.8, 1.0, z - 0.8, x + 0.8, 1.1, z + 0.8, T.gold, { solid: false });
+    const g = new THREE.Group();
+    g.position.set(x, 1.1, z);
+    for (const [dx, dz] of [[-0.75, -0.75], [0.75, -0.75], [-0.75, 0.75], [0.75, 0.75], [0, -0.75], [0, 0.75], [-0.75, 0], [0.75, 0]]) {
+      const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 1.6, 6), T.gold);
+      bar.position.set(dx, 0.8, dz);
+      g.add(bar);
+    }
+    const lid = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.16, 1.7), T.carved);
+    lid.position.y = 1.65;
+    g.add(lid);
+    this.scene.add(g);
+    const door = { g, t: 0, open: false, solid: this.world.addBox(x - 0.8, 1.1, z - 0.8, x + 0.8, 2.85, z + 0.8, null, 'static') };
+    if (!this.found(kind)) door.relic = new Relic(this, { kind, pos: V3(x, 1.75, z) });
+    if (door.relic) door.relic.range = 0;
+    this.cages = this.cages || [];
+    this.cages.push(door);
+    return door;
+  }
+  openCage(c, silent = false) {
+    if (c.open) return;
+    c.open = true;
+    c.solid.enabled = false;
+    if (c.relic) c.relic.range = 3.4;
+    if (silent) { c.t = 1; c.g.position.y = 1.1 + 2.6; return; }
+    this.game.audio.stoneGrind(1.2, 0.8);
+    this.game.audio.chime();
+  }
+  buildHub() {
+    const T = this.T;
+    this.chamber({ x0: -8, z0: -8, x1: 8, z1: 8, h: 14, wall: T.carved, roofMat: T.stone, skylight: { x0: -2, z0: -2, x1: 2, z1: 2 },
+      doors: { n: [{ a: 0, w: 3, h: 3.4 }], s: [{ a: 0, w: 3, h: 3.4 }], e: [{ a: 0, w: 3, h: 3.4 }], w: [{ a: 0, w: 3, h: 3.4 }] } });
+    // Moonlight through the oculus.
+    this.spot(V3(-2.5, 26, 3), V3(0, 0, 0), { color: 0xb8c8ff, intensity: 900, angle: 0.3, penumbra: 0.6, distance: 60 });
+    this.shaft(0, 0, 15.9, 0, 2.0, 0xb8c8ff, 0.05);
+    // The World Tree.
+    this.box(-0.9, 0, -0.9, 0.9, 7.2, 0.9, T.carved);
+    for (const [x0, z0, x1, z1] of [[-1.7, -0.5, -0.9, 0.5], [0.9, -0.5, 1.7, 0.5], [-0.5, -1.7, 0.5, -0.9], [-0.5, 0.9, 0.5, 1.7]]) this.box(x0, 0, z0, x1, 0.7, z1, T.dark);
+    this.box(-1.0, 2.2, -1.0, 1.0, 2.5, 1.0, T.jade, { solid: false });
+    this.box(-1.0, 4.4, -1.0, 1.0, 4.7, 1.0, T.red, { solid: false });
+    this.box(-2.6, 5.0, -2.6, 2.6, 5.4, 2.6, T.stone);
+    this.box(-2.7, 5.0, -2.7, 2.7, 5.15, 2.7, T.gold, { solid: false });
+    this.box(-3.2, 7.6, -0.4, 3.2, 8.1, 0.4, T.carved);
+    this.box(-0.4, 7.6, -3.2, 0.4, 8.1, 3.2, T.carved);
+    this.box(-1.1, 7.2, -1.1, 1.1, 8.6, 1.1, T.jade);
+    for (const [x, z] of [[3.2, 0], [-3.2, 0], [0, 3.2], [0, -3.2]]) {
+      const g = new THREE.SphereGeometry(0.35, 14, 10);
+      g.translate(x, 7.85, z);
+      this.addStatic(g, T.jade);
+    }
+    this.glyphStone('tree', V3(0, 3.4, 0.91), V3(0, 0, 1), 1.2, { tablet: false, glow: 0.4, color: 0x5dffb0 });
+    this.treeGlow = this.point(0, 3, 0, 0x5dffb0, 0, 16);
+    // Niches for the four directions, and the heart's niche above the platform.
+    const root = new THREE.Group();
+    this.scene.add(root);
+    this.treeShrine = new OfferingShrine(this, {
+      parent: root,
+      slots: [
+        { kind: 'east', pos: V3(0.92, 1.35, 0), normal: V3(1, 0, 0) },
+        { kind: 'north', pos: V3(0, 1.35, -0.92), normal: V3(0, 0, -1) },
+        { kind: 'west', pos: V3(-0.92, 1.35, 0), normal: V3(-1, 0, 0) },
+        { kind: 'south', pos: V3(0, 1.35, 0.92), normal: V3(0, 0, 1) },
+      ],
+      onComplete: () => this.awakenTree(),
+    });
+    this.heartShrine = new OfferingShrine(this, { parent: root, slots: [{ kind: 'center', pos: V3(0, 6.5, 0.92), normal: V3(0, 0, 1) }], onComplete: () => this.game.startFinale() });
+    // Steps that rise around the tree once the four stones are set.
+    const ring = [[3.5, 2.0], [3.5, 0], [3.5, -2.0], [2.0, -3.5], [0, -3.5], [-2.0, -3.5], [-3.5, -2.0], [-3.5, 0], [-3.5, 2.0]];
+    this.steps = ring.map(([x, z], i) => {
+      const top = 0.55 * (i + 1);
+      return new RisingBlock(this, { min: V3(x - 0.7, top - 0.5, z - 0.7), max: V3(x + 0.7, top, z + 0.7), mat: T.carved, depth: top + 0.6 });
+    });
+    // Coloured glyphs above each doorway point the way.
+    for (const [kind, x, z, n, col] of [['sun', 8, 0, V3(-1, 0, 0), 0xff5a46], ['moon', 0, -8, V3(0, 0, 1), 0xf0f0ff], ['jaguar', -8, 0, V3(1, 0, 0), 0x9a7cff], ['serpent', 0, 8, V3(0, 0, -1), 0xffd84a]]) {
+      this.glyphStone(kind, V3(x + n.x * 0.01, 6.0, z + n.z * 0.01), n, 1.6, { glow: 0.9, color: col });
+    }
+    this.brazier(-5.6, 0, -5.6, { intensity: 14, distance: 14 });
+    this.brazier(5.6, 0, 5.6, { intensity: 14, distance: 14 });
+    this.brazier(5.6, 0, -5.6, { light: false });
+    this.brazier(-5.6, 0, 5.6, { light: false });
+    this.plaque(['THE HEART OF THE WORLD', 'four corners · one centre'], V3(0, 10, 7.97), V3(0, 0, -1), 4.4, 1.1, { size: 110, glow: 0.3 });
+    this.dust(V3(-8, 0.2, -8), V3(8, 13, 8), 160, 0xd8e0ff);
+    // Restore progress after a respawn.
+    if (this.treeShrine.complete) this.awakenTree(true);
+  }
+  awakenTree(silent = false) {
+    if (this.awake) return;
+    this.awake = true;
+    this.treeGlow.intensity = 18;
+    this.steps.forEach((s, i) => s.rise(i * 0.35, silent));
+    if (!this.found('center')) this.heartRelic = new Relic(this, { kind: 'center', pos: V3(0, 6.9, 2.1) });
+    if (!silent) {
+      this.game.audio.awaken();
+      this.game.player.shake = 1.5;
+      this.game.ui.toast('THE WORLD TREE AWAKENS', 'good', 4);
+    }
+  }
+  buildEast() {
+    const T = this.T, net = this.net;
+    this.passage('x', 8.6, 17.4);
+    this.chamber({ x0: 18, z0: -6, x1: 30, z1: 6, h: 7, wall: T.red, roofMat: T.stone, doors: { w: [{ a: 0, w: 3, h: 3.2 }] }, skip: [] });
+    // The dawn slit in the east wall.
+    this.box(30, 0.95, 3.6, 30.6, 1.75, 4.4, T.void, { solid: false, shadow: false });
+    net.addSource(V3(29.9, 1.35, 4), V3(-1, 0, 0));
+    const glow = this.own(new THREE.MeshBasicMaterial({ color: new THREE.Color(3, 1.9, 1.2) }));
+    const pl = new THREE.Mesh(new THREE.PlaneGeometry(0.6, 0.8), glow);
+    pl.position.set(29.98, 1.35, 4);
+    pl.rotation.y = -Math.PI / 2;
+    this.scene.add(pl);
+    this.glyphStone('sun', V3(29.98, 2.6, 4), V3(-1, 0, 0), 0.9, { glow: 0.9, color: 0xff9050, tablet: false });
+    const mk = (x, z, state) => new SunMirror(this, net, { pos: V3(x, 0, z), state });
+    this.mE = [mk(22, 4, 0), mk(22, -2, 2), mk(26, -2, 0)];
+    this.mE.sol = [1, 0, 2];
+    this.eyeE = new BeamReceiver(this, net, { pos: V3(26, 1.35, -5.6), radius: 0.3, onChange: (on) => { if (on) this.openCage(this.cageE); } });
+    this.glyphStone('ajaw', V3(26, 2.5, -5.98), V3(0, 0, 1), 1.0, { glow: 0.2 });
+    this.cageE = this.cage(24, 0, 'east');
+    if (this.found('east')) this.openCage(this.cageE, true);
+    this.torch(V3(18, 2.6, 4.5), V3(1, 0, 0), { intensity: 10, distance: 12 });
+    this.plaque(['THE RED EAST', 'where the sun is born'], V3(24, 4.6, 5.97), V3(0, 0, -1), 3.2, 0.85, { size: 110 });
+  }
+  buildNorth() {
+    const T = this.T, tex = this.game.tex;
+    this.passage('z', -17.4, -8.6);
+    this.chamber({ x0: -6, z0: -30, x1: 6, z1: -18, h: 7, wall: T.stone, doors: { s: [{ a: 0, w: 3, h: 3.2 }] } });
+    this.sums = [[2, 3], [6, 1], [4, 5]];
+    this.answersN = this.sums.map(([a, b]) => a + b);
+    const faces = Array.from({ length: 10 }, (_, n) => `num:${n}`);
+    this.dialsN = [-3.2, 0, 3.2].map((x) => new GlyphDial(this, { pos: V3(x, 0, -23.5), facing: V3(0, 0, 1), faces, value: 0, radius: 0.78, label: 'Turn the numeral dial', onChange: () => this.checkNorth() }));
+    this.sums.forEach(([a, b], i) => {
+      this.mural(V3([-3.2, 0, 3.2][i], 4.0, -29.97), V3(0, 0, 1), 2.6, 1.5, (x, w, h) => {
+        const s = h * 0.62;
+        x.drawImage(tex.glyphCanvas(`num:${a}`, '#1d120a', 256), w * 0.2 - s / 2, h / 2 - s / 2, s, s);
+        x.drawImage(tex.glyphCanvas('plus', '#1d120a', 256), w * 0.5 - s * 0.3, h / 2 - s * 0.3, s * 0.6, s * 0.6);
+        x.drawImage(tex.glyphCanvas(`num:${b}`, '#1d120a', 256), w * 0.8 - s / 2, h / 2 - s / 2, s, s);
+      }, { bg: '#e8e2d0', border: '#7a6a50', glow: 0.3 });
+    });
+    this.cageN = this.cage(0, -27.4, 'north');
+    if (this.found('north')) { this.openCage(this.cageN, true); this.dialsN.forEach((d, i) => d.setValue(this.answersN[i])); this.solvedN = true; }
+    this.torch(V3(-6, 2.6, -21), V3(1, 0, 0), { intensity: 10, distance: 12 });
+    this.torch(V3(6, 2.6, -21), V3(-1, 0, 0), { light: false });
+    this.plaque(['THE WHITE NORTH', 'the sum of things'], V3(0, 5.6, -18.03), V3(0, 0, -1), 3.0, 0.8, { size: 110 });
+  }
+  checkNorth() {
+    if (this.solvedN || !this.dialsN.every((d, i) => d.value === this.answersN[i])) return;
+    this.solvedN = true;
+    this.openCage(this.cageN);
+    this.game.ui.toast('THE NORTH IS SATISFIED', 'good');
+  }
+  buildWest() {
+    const T = this.T, tex = this.game.tex;
+    this.passage('x', -17.4, -8.6);
+    this.chamber({ x0: -30, z0: -6, x1: -18, z1: 6, h: 7, wall: T.dark, floorBox: false, doors: { e: [{ a: 0, w: 3, h: 3.2 }] } });
+    this.box(-30.6, -8, -6.6, -29.4, 0, 6.6, T.dark);
+    this.box(-20, -8, -6.6, -17.4, 0, 6.6, T.floor);
+    this.box(-29.4, -8, -6.6, -27.8, 0, 6.6, T.floor);
+    this.box(-30.6, -8.5, -6.6, -17.4, -8, 6.6, T.dark);
+    this.killZone(V3(-27.8, -12, -6), V3(-20, -2.5, 6), 'THE DARK TOOK YOU');
+    for (const x of [-20.9, -22.9, -24.9, -26.9]) {
+      const face = tex.tileFace('skull');
+      const top = this.own(new THREE.MeshStandardMaterial({ map: face.map, emissive: 0x8a5cff, emissiveMap: face.em, emissiveIntensity: 0.5, roughness: 0.85 }));
+      new CrumbleTile(this, { min: V3(x - 0.8, -0.5, -0.8), max: V3(x + 0.8, 0, 0.8), mat: T.dark, top, delay: 0.5, regen: 3.5 });
+    }
+    this.dartW = new DartTrap(this, { origin: V3(-23.9, 0, -6), dir: V3(0, 0, 1), length: 12, period: 2.2, warn: 0.6 });
+    this.cageW = this.cage(-29.0, 0, 'west');
+    this.openCage(this.cageW, true);
+    this.point(-28.6, 2.4, 0, 0x8a5cff, 8, 12);
+    this.plaque(['THE BLACK WEST', 'where the sun dies'], V3(-24, 4.8, 5.97), V3(0, 0, -1), 3.0, 0.8, { size: 110, glow: 0.12 });
+  }
+  buildSouth() {
+    const T = this.T;
+    this.passage('z', 8.6, 17.4);
+    this.chamber({ x0: -6, z0: 18, x1: 6, z1: 30, h: 7, wall: T.ochre, roofMat: T.stone, doors: { n: [{ a: 0, w: 3, h: 3.2 }] } });
+    const refresh = () => this.checkSouth();
+    this.platesS = [-3, 3].map((x) => new PressurePlate(this, { pos: V3(x, 0, 27), size: 1.7, color: 0xffc457, glyph: 'sun', onChange: refresh }));
+    this.blocksS = [new PushBlock(this, { pos: V3(-3, 0.55, 23) }), new PushBlock(this, { pos: V3(1, 0.55, 23) })];
+    this.pillar(3, 23, 0, 7, 1.4);
+    this.cageS = this.cage(0, 29.2, 'south');
+    if (this.found('south')) { this.openCage(this.cageS, true); this.solvedS = true; }
+    this.torch(V3(6, 2.6, 21), V3(-1, 0, 0), { intensity: 10, distance: 12 });
+    this.torch(V3(-6, 2.6, 21), V3(1, 0, 0), { light: false });
+    this.plaque(['THE YELLOW SOUTH', 'weigh down the sun'], V3(0, 4.8, 18.03), V3(0, 0, 1), 3.0, 0.8, { size: 110 });
+  }
+  checkSouth() {
+    if (this.solvedS || !this.platesS.every((p) => p.pressed)) return;
+    this.solvedS = true;
+    this.openCage(this.cageS);
+    this.game.ui.toast('THE SOUTH IS SATISFIED', 'good');
+  }
+  // Outside: the pyramid falls away below the apex, into the jungle.
+  buildExterior() {
+    const T = this.T;
+    const ring = (y0, y1, half, hole, mat) => this.wall('y', y0, y1, -half, half, -half, half, mat, [{ a0: -hole, a1: hole, b0: -hole, b1: hole }], { solid: false, scale: 6 });
+    // Stepped tiers. Their hollow centres hide the chambers inside, and
+    // each tier's top overlaps the hole of the one below, so from above
+    // the pyramid reads as solid.
+    ring(15.9, 16.6, 5, 2, T.carved);
+    ring(14.6, 15.9, 11, 8.65, T.stone);
+    ring(13.3, 14.6, 15.5, 8.65, T.mossy);
+    ring(12.0, 13.3, 20, 8.65, T.stone);
+    ring(10.6, 12.0, 25, 8.65, T.mossy);
+    ring(9.2, 10.6, 30.7, 8.65, T.stone);
+    let y = 9.2, half = 33.7, i = 0;
+    while (y > -30) {
+      ring(y - 4, y, half, 30.65, i % 2 ? T.stone : T.mossy);
+      this.wall('y', y - 0.6, y, -half - 0.08, half + 0.08, -half - 0.08, half + 0.08, T.carved, [{ a0: -half + 0.6, a1: half - 0.6, b0: -half + 0.6, b1: half - 0.6 }], { solid: false });
+      y -= 4; half += 3; i++;
+    }
+    // A pierced crest around the oculus, and other temples above the jungle.
+    for (const [x0, z0, x1, z1] of [[-3.8, -3.8, 3.8, -3.2], [-3.8, 3.2, 3.8, 3.8], [-3.8, -3.2, -3.2, 3.2], [3.2, -3.2, 3.8, 3.2]]) {
+      this.box(x0, 16.6, z0, x1, 17.4, z1, T.carved, { solid: false });
+      this.box(x0, 18.6, z0, x1, 19.4, z1, T.red, { solid: false });
+    }
+    for (const [x, z] of [[-3.5, -3.5], [3.5, -3.5], [-3.5, 3.5], [3.5, 3.5]]) this.box(x - 0.3, 17.4, z - 0.3, x + 0.3, 18.6, z + 0.3, T.carved, { solid: false });
+    for (const [cx, cz, base, tiers] of [[190, -70, 34, 7], [-150, -175, 30, 6], [70, -215, 26, 6], [-210, 60, 24, 5]]) {
+      for (let t = 0; t < tiers; t++) {
+        const h = base - t * (base - 6) / tiers, y0 = -33 + t * 5.5;
+        this.box(cx - h, y0, cz - h, cx + h, y0 + 5.5, cz + h, t % 2 ? T.stone : T.mossy, { solid: false, scale: 8 });
+      }
+      this.box(cx - 5, -33 + tiers * 5.5, cz - 5, cx + 5, -33 + tiers * 5.5 + 7, cz + 5, T.stone, { solid: false });
+    }
+    // Four great stairways down the faces.
+    for (let k = 0; k < 4; k++) {
+      for (let j = 0; j < 40; j++) {
+        const yy = 9.2 - j * 1.0, d = 30.7 + j * 0.75;
+        const [x0, z0, x1, z1] = k === 0 ? [-3, d, 3, d + 0.8] : k === 1 ? [-3, -d - 0.8, 3, -d] : k === 2 ? [d, -3, d + 0.8, 3] : [-d - 0.8, -3, -d, 3];
+        this.box(x0, yy - 1.0, z0, x1, yy, z1, T.stone, { solid: false });
+      }
+    }
+    // The jungle far below, and a temple on a distant hill.
+    const r = this.rnd;
+    for (let k = 0; k < 220; k++) {
+      const a = r() * TAU, d = 66 + r() * 140;
+      this.card('canopy', Math.cos(a) * d, -32 + r() * 6, Math.sin(a) * d, r() * TAU, 1.2 + r() * 0.3, 16 + r() * 12, 16 + r() * 12);
+    }
+    this.box(-200, -34, -200, 200, -33, 200, T.earth, { solid: false, scale: 12, shadow: false });
+    // Sunlight for the finale (dark until then).
+    this.sun = new THREE.DirectionalLight(0xffc890, 0);
+    this.sun.position.set(80, 10, -20);
+    this.sun.target.position.set(0, 0, 0);
+    this.scene.add(this.sun, this.sun.target);
+    // The feathered serpent of light (hidden until the finale).
+    this.serpent = [];
+    const featherMat = this.own(new THREE.MeshBasicMaterial({ map: this.game.tex.glowSprite(), color: new THREE.Color(0.3, 1.2, 0.75), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+    const headMat = this.own(new THREE.MeshBasicMaterial({ map: this.game.tex.glowSprite(), color: new THREE.Color(1.6, 1.3, 0.6), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+    for (let k = 0; k < 30; k++) {
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), k === 0 ? headMat : featherMat);
+      m.visible = false;
+      this.scene.add(m);
+      this.serpent.push(m);
+    }
+  }
+  isOutOfBounds(p) { return this.finale ? false : super.isOutOfBounds(p); }
+  update(dt) {
+    for (const c of this.cages || []) {
+      if (c.open && c.t < 1) { c.t = Math.min(1, c.t + dt / 1.6); c.g.position.y = 1.1 + easeInOut(c.t) * 2.6; }
+    }
+    const fourPlaced = ['east', 'north', 'west', 'south'].filter((k) => this.placed(k)).length;
+    const fourFound = ['east', 'north', 'west', 'south'].filter((k) => this.found(k)).length;
+    if (!this.awake) {
+      if (fourFound > fourPlaced) this.objective(`Set the stones you carry into the World Tree (${fourPlaced} / 4 set).`);
+      else this.objective(`Find the stones of the four directions (${fourFound} / 4). Each waits at the end of a passage.`);
+    } else if (!this.found('center')) this.objective('The World Tree awakens. Climb the rising steps to the green heart of the world.');
+    else this.objective('Set the green heart into the World Tree.');
+  }
+  // Finale: the feathered serpent of light spirals up the tree and out of
+  // the pyramid; the camera follows it into the dawn.
+  updateFinale(dt) {
+    const f = this.finale;
+    if (!f.init) {
+      f.init = true;
+      this.game.audio.awaken();
+      this.game.audio.finale();
+      f.from = f.start.clone();
+    }
+    f.t += dt;
+    const t = f.t;
+    const cam = this.game.camera;
+    // Serpent along a rising helix.
+    const head = t * 5.5 + Math.max(0, t - 3) ** 2 * 1.6;
+    this.serpent.forEach((m, i) => {
+      const s = head - i * 0.45;
+      m.visible = s > 0;
+      if (!m.visible) return;
+      const y = 0.6 + s * 0.62, a = s * 0.55;
+      const r = y < 10 ? 2.4 : y < 18 ? lerp(2.4, 1.2, clamp((y - 10) / 3, 0, 1)) : 1.2 + (y - 18) * 0.3;
+      m.position.set(Math.cos(a) * r, y, Math.sin(a) * r);
+      m.quaternion.copy(cam.quaternion);
+      const k = i === 0 ? 1.3 : 0.9 * (1 - i / this.serpent.length) + 0.25;
+      m.scale.setScalar(k);
+    });
+    this.treeGlow.intensity = Math.min(34, 18 + t * 6);
+    // Camera: step back to watch the serpent climb the tree, rise up the
+    // axis of the oculus, then fly out west and look back at the pyramid
+    // standing against the sunrise.
+    const pA = V3(2.6, 6.6, 5.0), p1 = V3(0, 10.4, 0), p2 = V3(0, 30, 0), p3 = V3(-95, 38, 25);
+    const ez = (x) => easeInOut(clamp(x, 0, 1));
+    cam.position.lerpVectors(f.from, pA, ez(t / 2.5)).lerp(p1, ez((t - 2.5) / 2)).lerp(p2, ez((t - 4.5) / 2.2)).lerp(p3, ez((t - 6.2) / 4.5));
+    const look = V3(0, 6.5 + Math.min(t, 3) * 1.7, 0).lerp(V3(0, 80, -9), ez((t - 2.5) / 2)).lerp(V3(0, 12, 0), ez((t - 6) / 2.5));
+    const q = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().lookAt(cam.position, look, Y_UP));
+    cam.quaternion.slerpQuaternions(f.startQ, q, Math.min(1, t / 1.6));
+    if (t > 1.6) cam.quaternion.copy(q);
+    cam.updateMatrixWorld();
+    // Dawn breaks.
+    const d = clamp((t - 3) / 5, 0, 1);
+    const u = this.skyU;
+    u.uTop.value.setHex(0x050a1c).lerp(new THREE.Color(0x2a4a8a), d);
+    u.uHorizon.value.setHex(0x1c2440).lerp(new THREE.Color(0xffa060), d);
+    u.uGlow.value.setHex(0x5a6a9a).lerp(new THREE.Color(0xffb060), d);
+    u.uMoon.value.set(-0.3, 0.75, 0.5).normalize().lerp(V3(0.95, 0.12, -0.25).normalize(), d).normalize();
+    u.uMoonCol.value.setHex(0xfff6e0).lerp(new THREE.Color(0xffe0a0), d).multiplyScalar(1.6 + d);
+    u.uMoonSize.value = lerp(0.0009, 0.0016, d);
+    u.uStars.value = 1 - d;
+    this.scene.fog.color.setHex(0x07060a).lerp(new THREE.Color(0x8a6a5a), d);
+    this.scene.fog.density = lerp(0.018, 0.004, d);
+    this.sun.intensity = d * 2.6;
+    this.game.ui.setWhite(clamp((t - 10.2) / 1.8, 0, 1));
+    return t >= 12.2;
+  }
+}
+
+
 /* ---------------------------------------------------------------------
    Main-menu backdrop: a Penrose triangle that is only "possible" from
    exactly one viewpoint. The camera drifts slightly, so the illusion
@@ -3193,13 +7216,22 @@ const LEVEL_INFO = [
   { name: 'THE GRAVITY CHAMBER', blurb: 'Every surface is a floor.' },
   { name: 'THE PORTAL LAB', blurb: 'Here is there.' },
   { name: 'THE BROKEN DIMENSION', blurb: 'Everything at once.' },
+  { name: 'THE JUNGLE GATE', blurb: 'Five offerings open the way.' },
+  { name: 'THE HALL OF COUNTING', blurb: 'The gods count in bars and dots.' },
+  { name: "THE SERPENT'S EYE", blurb: 'Bend the light of the sun.' },
+  { name: 'THE TRIAL OF TRAPS', blurb: 'Blade, fire, stone. Run.' },
+  { name: 'THE FIVE DIRECTIONS', blurb: 'The heart of the world.' },
+];
+const PART_INFO = [
+  { title: 'PART I · THE FACILITY', from: 0 },
+  { title: 'PART II · THE SUNKEN TEMPLE', from: PART_ONE_COUNT },
 ];
 
 class UI {
   constructor(game) {
     this.game = game;
     this.$ = (id) => document.getElementById(id);
-    this.screens = ['menu-main', 'menu-levels', 'menu-settings', 'menu-credits', 'menu-pause', 'controls-overlay', 'click-resume', 'level-complete', 'victory'];
+    this.screens = ['menu-main', 'menu-levels', 'menu-settings', 'menu-credits', 'menu-pause', 'controls-overlay', 'click-resume', 'level-complete', 'chapter-complete', 'victory'];
     this.hud = this.$('hud');
     this.promptEl = this.$('prompt');
     this.promptText = this.$('prompt-text');
@@ -3242,13 +7274,20 @@ class UI {
     const grid = this.$('level-grid');
     grid.innerHTML = '';
     LEVEL_INFO.forEach((info, i) => {
+      const part = PART_INFO.find((p) => p.from === i);
+      if (part) {
+        const h = document.createElement('div');
+        h.className = `part-head ${i >= PART_ONE_COUNT ? 'temple' : ''}`;
+        h.textContent = part.title;
+        grid.appendChild(h);
+      }
       const locked = i + 1 > save.unlocked;
       const b = document.createElement('button');
-      b.className = `level-card ${locked ? 'locked' : ''} ${save.completed[i] ? 'done' : ''}`;
+      b.className = `level-card ${locked ? 'locked' : ''} ${save.completed[i] ? 'done' : ''} ${i >= PART_ONE_COUNT ? 'temple' : ''}`;
       b.dataset.action = locked ? 'locked-level' : 'start-level';
       b.dataset.level = String(i);
       const best = save.bestTimes[i];
-      b.innerHTML = `<div class="lv-num">0${i + 1}</div><div class="lv-name">${info.name}</div>
+      b.innerHTML = `<div class="lv-num">${String(i + 1).padStart(2, '0')}</div><div class="lv-name">${info.name}</div>
         <div class="lv-meta">${locked ? '🔒 LOCKED' : save.completed[i] ? `✔ BEST ${formatTime(best)}` : info.blurb}</div>`;
       grid.appendChild(b);
     });
@@ -3288,6 +7327,30 @@ class UI {
     el.classList.add('updated');
   }
   setTimer(t) { this.$('timer').textContent = formatTime(t); }
+  // Offering tray in the HUD: one slot per relic the level asks for.
+  setRelics(kinds, found = [], placed = []) {
+    const el = this.$('relic-tray');
+    if (!kinds || !kinds.length) { el.classList.add('hidden'); this.relicKey = null; return; }
+    const key = `${kinds.join()}|${found.join()}|${placed.join()}`;
+    if (key === this.relicKey) return;
+    this.relicKey = key;
+    el.classList.remove('hidden');
+    const tex = this.game.tex;
+    const n = kinds.filter((k) => found.includes(k)).length;
+    el.innerHTML = `<div class="relic-label">${kinds.length > 1 ? `OFFERINGS ${n} / ${kinds.length}` : 'RELIC'}</div><div class="relic-slots">${kinds.map((k) => {
+      const info = RELIC_INFO[k];
+      const state = placed.includes(k) ? 'placed' : found.includes(k) ? 'found' : '';
+      return `<span class="relic ${state}" title="${info.name}" style="--rc:${info.color}"><img alt="" src="${tex.relicIcon(k, state ? info.color : '#8a8070')}"></span>`;
+    }).join('')}</div>`;
+  }
+  // A large title card that fades in and out over the game.
+  chapterCard(kicker, title, sub = '') {
+    const el = this.$('chapter-card');
+    el.innerHTML = `<div class="cc-kicker">${kicker}</div><div class="cc-title">${title}</div>${sub ? `<div class="cc-sub">${sub}</div>` : ''}`;
+    el.classList.remove('show');
+    void el.offsetWidth;
+    el.classList.add('show');
+  }
   setPrompt(p) {
     const key = p ? `${p.text}|${p.far ? 1 : 0}|${p.key || 'E'}|${TOUCH}` : null;
     if (key === this.lastPrompt) return;
@@ -3488,7 +7551,7 @@ const QUALITY = {
   medium: { pixelRatio: 1.25, shadows: true, shadowSize: 1024, bloom: true, portalScale: 0.5 },
   high: { pixelRatio: 1.5, shadows: true, shadowSize: 2048, bloom: true, portalScale: 0.75 },
 };
-const LEVELS = [Level1, Level2, Level3, Level4, Level5];
+const LEVELS = [Level1, Level2, Level3, Level4, Level5, Level6, Level7, Level8, Level9, Level10];
 
 const _plane = new THREE.Plane();
 const _clip = new THREE.Vector4();
@@ -3497,6 +7560,8 @@ const _frustum = new THREE.Frustum();
 const _pv = new THREE.Matrix4();
 const _vm = new THREE.Matrix4();
 const _size = new THREE.Vector2();
+const _hzMin = new THREE.Vector3();
+const _hzMax = new THREE.Vector3();
 
 // Replace the near plane of a projection with an arbitrary clip plane
 // (Lengyel's oblique near-plane), so a portal camera never renders
@@ -3780,7 +7845,7 @@ class Game {
       this.renderer.shadowMap.enabled = q.shadows;
       if (this.level) this.level.scene.traverse((o) => { if (o.material) [].concat(o.material).forEach((m) => { m.needsUpdate = true; }); });
     }
-    if (this.state !== 'menu' && this.state !== 'victory') { this.camera.fov = this.settings.fov; this.camera.updateProjectionMatrix(); }
+    if (this.state !== 'menu' && this.state !== 'victory' && this.state !== 'chapter') { this.camera.fov = this.settings.fov; this.camera.updateProjectionMatrix(); }
     this.onResize();
     this.save.save();
   }
@@ -3798,7 +7863,8 @@ class Game {
       this.ui.hideScreens();
       this.lockPointer();
     }
-    requestAnimationFrame(() => this.ui.fade(0, 0.8));
+    if (i === PART_ONE_COUNT) this.ui.chapterCard('PART II', 'THE SUNKEN TEMPLE', 'The light set you down somewhere older.');
+    requestAnimationFrame(() => this.ui.fade(0, i === PART_ONE_COUNT ? 2.2 : 0.8));
   }
   restartLevel() {
     this.state = 'playing';
@@ -3809,15 +7875,18 @@ class Game {
     requestAnimationFrame(() => this.ui.fade(0, 0.6));
   }
   loadLevel(i, cp = 0, fresh = true) {
+    const carry = !fresh && this.level && this.levelIndex === i ? this.level.carry : null;
     if (this.level) {
       this.level.scene.remove(this.player.avatar);
       this.level.dispose();
     }
     this.held = null;
     this.ui.setHeld(null);
-    const L = new LEVELS[i](this, cp);
+    const L = new LEVELS[i](this, cp, carry);
     this.level = L;
     this.levelIndex = i;
+    document.body.classList.toggle('temple', L.meta.part === 2);
+    this.ui.setRelics(null);
     L.build();
     this.player.attach(L);
     this.player.spawn(L.spawn.pos, L.spawn.up, L.spawn.look);
@@ -3864,6 +7933,7 @@ class Game {
     }
     this.held = null;
     this.state = 'menu';
+    document.body.classList.remove('temple');
     if (document.pointerLockElement) document.exitPointerLock();
     this.ui.showHUD(false);
     this.ui.refreshMainMenu();
@@ -3904,20 +7974,45 @@ class Game {
     this.ui.showHUD(false);
     if (document.pointerLockElement) document.exitPointerLock();
   }
-  finishGame() {
-    this.save.completeLevel(LEVEL_COUNT - 1, this.levelTime);
+  // Per-level times for a range of levels, plus their total.
+  breakdown(from, to) {
     const times = this.save.data.lastTimes;
-    const total = times.reduce((a, b) => a + (b || 0), 0);
-    document.getElementById('victory-time').textContent = formatTime(total);
-    document.getElementById('victory-breakdown').innerHTML = LEVEL_INFO.map((l, i) => `<span>${i + 1}. ${l.name}</span><span>${formatTime(times[i])}</span>`).join('');
+    let total = 0;
+    const rows = [];
+    for (let i = from; i < to; i++) {
+      total += times[i] || 0;
+      rows.push(`<span>${i + 1}. ${LEVEL_INFO[i].name}</span><span>${formatTime(times[i])}</span>`);
+    }
+    return { total, html: rows.join('') };
+  }
+  // Leave the finale for a results screen drawn over the menu backdrop.
+  showResults(screen, state) {
     if (this.level) { this.level.scene.remove(this.player.avatar); this.level.dispose(); this.level = null; }
-    this.state = 'victory';
+    document.body.classList.remove('temple');
+    this.state = state;
     this.camera.fov = 16; this.camera.near = 0.5; this.camera.updateProjectionMatrix();
     this.renderPass.scene = this.menu.scene;
     this.audio.startAmbient(AMBIENT_PROFILES.menu);
     this.ui.setWhite(1);
     requestAnimationFrame(() => requestAnimationFrame(() => this.ui.fade(0, 2.5, '#f4f8ff')));
-    this.ui.showScreen('victory');
+    this.ui.showScreen(screen);
+  }
+  // End of level 5: the facility is behind you, the temple is ahead.
+  finishPartOne() {
+    this.save.completeLevel(PART_ONE_COUNT - 1, this.levelTime);
+    const b = this.breakdown(0, PART_ONE_COUNT);
+    document.getElementById('chapter-time').textContent = formatTime(b.total);
+    document.getElementById('chapter-breakdown').innerHTML = b.html;
+    this.showResults('chapter-complete', 'chapter');
+  }
+  finishGame() {
+    this.save.completeLevel(LEVEL_COUNT - 1, this.levelTime);
+    const one = this.breakdown(0, PART_ONE_COUNT), two = this.breakdown(PART_ONE_COUNT, LEVEL_COUNT);
+    document.getElementById('victory-time').textContent = formatTime(one.total + two.total);
+    document.getElementById('victory-breakdown').innerHTML =
+      `<span class="part">${PART_INFO[0].title}</span><span class="part">${formatTime(one.total)}</span>${one.html}` +
+      `<span class="part">${PART_INFO[1].title}</span><span class="part">${formatTime(two.total)}</span>${two.html}`;
+    this.showResults('victory', 'victory');
   }
   respawn(msg, type = 'warn') {
     if (this.respawning || !this.level) return;
@@ -3932,6 +8027,15 @@ class Game {
       this.ui.fade(0, 0.5);
       this.respawning = false;
     }, 280);
+  }
+
+  // A trap got the player: red flash, a thud, then back to the last checkpoint.
+  killPlayer(msg = 'THE TEMPLE CLAIMS YOU') {
+    if (this.respawning || this.state !== 'playing') return;
+    this.audio.death();
+    this.ui.flash(0xff2a1a, 0.7);
+    this.player.shake = 0.5;
+    this.respawn(msg, 'warn');
   }
 
   /* ---------------- gameplay services used by entities ---------------- */
@@ -4123,6 +8227,7 @@ class Game {
     this.audio.update(dt);
     switch (this.state) {
       case 'menu':
+      case 'chapter':
       case 'victory':
         this.menu.update(dt, this.camera);
         break;
@@ -4167,7 +8272,13 @@ class Game {
     L.update(dt);
     L.runDeferred();
     if (this.state !== 'playing' || this.level !== L) return;
-    if (L.isOutOfBounds(pl.pos) && !this.respawning) { this.respawn('SIGNAL LOST — RETURNING TO CHECKPOINT'); return; }
+    if (L.isOutOfBounds(pl.pos) && !this.respawning) { this.respawn(L.meta.part === 2 ? 'THE DARK SWALLOWS YOU — BACK TO THE LAST CHECKPOINT' : 'SIGNAL LOST — RETURNING TO CHECKPOINT'); return; }
+    if (L.hazards.length && !this.respawning) {
+      boxFrom(pl.pos, pl.half, _hzMin, _hzMax);
+      for (const h of L.hazards) {
+        if (h.hits(_hzMin, _hzMax)) { this.killPlayer(h.message); return; }
+      }
+    }
     this.updateTarget();
     this.handleInteract();
     if (this.touchMode) this.touchCtl.setUse(this.held ? 'holding' : this.target && !this.target.out ? 'ready' : '');
@@ -4177,7 +8288,10 @@ class Game {
     const L = this.level;
     for (const e of L.entities.slice()) if (!(e instanceof Trigger) && !(e instanceof PhysObject) && !(e instanceof PressurePlate)) e.update(dt);
     L.updateCommon(dt);
-    if (L.updateFinale(dt)) this.finishGame();
+    if (L.updateFinale(dt)) {
+      if (this.levelIndex === PART_ONE_COUNT - 1) this.finishPartOne();
+      else this.finishGame();
+    }
   }
   renderPortals() {
     const L = this.level;
@@ -4243,7 +8357,7 @@ async function boot() {
   window.__IR_STARTED = true;
   try {
     await Promise.race([
-      Promise.all([document.fonts.load("700 48px 'Orbitron'"), document.fonts.load("600 32px 'Rajdhani'"), document.fonts.load("500 32px 'Rajdhani'")]),
+      Promise.all([document.fonts.load("700 48px 'Orbitron'"), document.fonts.load("600 32px 'Rajdhani'"), document.fonts.load("500 32px 'Rajdhani'"), document.fonts.load("700 48px 'Cinzel'")]),
       new Promise((r) => setTimeout(r, 2000)),
     ]);
   } catch (e) { /* fonts are optional */ }
